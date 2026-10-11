@@ -940,7 +940,9 @@ export function mountMarketRoutes(
             if (prePatch !== null && prePatch.disables.includes(rowId)) {
               const back = await disableRow(userPatchPath, rowId)
               if (!back.ok) logEvent('warn', 'toggle', `${name}: patch row ${rowId} could not be put back — ${back.reason}`)
-            } else {
+            } else if (prePatch === null || !prePatch.forced.includes(rowId)) {
+              // A row already forced on before this call got nothing from
+              // the enable; that block is the user's to keep.
               removeRowBlocks(userPatchPath, [rowId])
             }
           }

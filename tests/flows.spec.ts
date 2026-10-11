@@ -5236,6 +5236,33 @@ describe('uninstall flow', () => {
     expect(readFileSync(userPatch, 'utf8')).not.toContain('dsh-patchy-row')
   })
 
+  it('leaves no disable behind when the row was force-enabled before it was switched off (#821)', async () => {
+    // An earlier enable wrote `disabled: false`. Switching off then added a
+    // second block, and the uninstall cleared only the first one: the
+    // `disabled: true` that stayed switched the next reinstall off.
+    fake.repos['github:o/dsh-patchy'] = {
+      name: 'dsh-patchy',
+      manifest: { dsh: { bundle: { patch: './cordis.patch.yml' } }, main: 'lib/index.js' },
+      artifacts: ['lib/index.js', 'cordis.patch.yml'],
+    }
+    await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-patchy' })
+    hot.mounts = []
+    writeFileSync(
+      join(profileDir('web'), 'node_modules', 'dsh-patchy', 'cordis.patch.yml'),
+      "- insert:\n    - id: dsh-patchy-row\n      name: 'dsh-patchy'\n",
+    )
+    const userPatch = join(profileDir('web'), 'cordis.patch.yml')
+    writeFileSync(userPatch, '- id: dsh-patchy-row\n  disabled: false\n')
+
+    const off = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-patchy', enabled: false })
+    expect(off.status).toBe(200)
+    expect(readFileSync(userPatch, 'utf8')).toBe('- id: dsh-patchy-row\n  disabled: true\n')
+
+    const r = await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'dsh-patchy' })
+    expect(r.status).toBe(200)
+    expect(readFileSync(userPatch, 'utf8')).not.toContain('dsh-patchy-row')
+  })
+
   it('removes the dangling host bridge link a Desktop boot projected for the plugin (#662)', async () => {
     fake.npm['dsh-loop'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
     // A flat-layout Desktop deployment: its pnpm-managed node_modules is
@@ -6763,6 +6790,27 @@ describe('generic enable/disable toggle (#60)', () => {
     // trace of this call in the row layer.
     expect(patchText()).not.toContain('disabled: false')
     expect(patchText()).not.toContain('dsh-patchy')
+  })
+
+  it('keeps a force-enable block the user already had when a failed enable rolls back (#821)', async () => {
+    // The enable found the row already forced on and wrote nothing. The
+    // rollback has nothing of its own to take back, and clearing every block
+    // of the row would hand it back to the lower layers that hold it down.
+    const { userPatch } = await installPatchy()
+    const patchFile = join(profileDir('web'), 'node_modules', 'dsh-patchy', 'cordis.patch.yml')
+    writeFileSync(patchFile, [
+      '- insert:',
+      '    - id: dsh-patchy',
+      "      name: 'dsh-patchy'",
+      '    - id: dsh-patchy/panel',
+      "      name: 'dsh-patchy/panel'",
+      '',
+    ].join('\n'))
+    writeFileSync(userPatch, '- id: dsh-patchy\n  disabled: false\n')
+
+    const on = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-patchy', enabled: true })
+    expect(on.json.ok).toBe(false)
+    expect(readFileSync(userPatch, 'utf8')).toBe('- id: dsh-patchy\n  disabled: false\n')
   })
 
   it('reports restart when the disable leaves the live fiber up', async () => {
