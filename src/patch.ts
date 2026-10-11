@@ -429,6 +429,37 @@ function rowBlock(rowId: string, disabled: boolean): string {
 }
 
 /**
+ * Every two-line `- id: X` + `disabled: …` block for one row, in file order
+ * (#821). A row that goes on with more keys (`config:` and the like) is not
+ * one of these blocks: cutting its first two lines would leave the rest
+ * hanging off the entry above it. The last block of a file may lack its
+ * newline.
+ */
+function rowBlocksRe(rowId: string, disabled: 'true' | 'false' | 'any'): RegExp {
+  const id = escapeRegExp(rowId)
+  const value = disabled === 'any' ? '(?:true|false)' : disabled
+  return new RegExp(`^- id: (?:${id}|'${id}'|"${id}")[ \\t]*\\r?\\n  disabled: ${value}[ \\t]*(?:\\r?\\n(?![ \\t])|(?![\\s\\S]))`, 'gmu')
+}
+
+/**
+ * What the patch file finally says about one row: the flag of its last
+ * `- id: X` entry that carries one, rows with more keys included. Later
+ * entries override earlier ones.
+ */
+function lastRowFlag(text: string, rowId: string): 'true' | 'false' | null {
+  const id = escapeRegExp(rowId)
+  const idLine = new RegExp(`^- id: (?:${id}|'${id}'|"${id}")\\s*$`, 'u')
+  const lines = text.split(/\r?\n/u)
+  let flag: 'true' | 'false' | null = null
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!idLine.test(lines[index] ?? '')) continue
+    const value = /^ {2}disabled: (true|false)\s*$/u.exec(lines[index + 1] ?? '')
+    if (value !== null) flag = value[1] as 'true' | 'false'
+  }
+  return flag
+}
+
+/**
  * Append one top-level patch entry, refusing when the file is not a valid
  * entry list. The refusal is the point: a malformed patch layer (the
  * `[]` + items mistake, or any broken YAML) must never be made worse —
@@ -488,11 +519,40 @@ function appendPatchEntry(patchPath: string, block: string): { ok: boolean; reas
   return { ok: true, reason: null }
 }
 
-/** Disable one row: append `- id: X` + `disabled: true` (idempotent). */
+/**
+ * Disable one row: `- id: X` + `disabled: true` (idempotent).
+ *
+ * A force-enable block already there is flipped in place rather than
+ * followed by a second block (#821): the pair cancelled out by order alone,
+ * and an uninstall that cleared one of them left the other behind to switch
+ * a later reinstall off. Duplicates an older version left are folded into
+ * the one block at the same time.
+ */
 export function disableRow(patchPath: string, rowId: string): Promise<{ ok: boolean; reason: string | null }> {
   return queuedWrite(async () => {
     if (!ROW_ID_RE.test(rowId)) {
       return { ok: false, reason: `行 id 含特殊字符,不支持写入补丁层 / row id ${rowId} cannot be written to the patch layer` }
+    }
+    const text = (() => {
+      try { return readFileSync(patchPath, 'utf8') } catch { return '' }
+    })()
+    const blocks = text.match(rowBlocksRe(rowId, 'any')) ?? []
+    if (blocks.length > 1 || blocks.some(block => /disabled: false/u.test(block))) {
+      let kept = false
+      const next = text.replace(rowBlocksRe(rowId, 'any'), block => {
+        if (kept) return ''
+        kept = true
+        const flipped = rowBlock(rowId, true)
+        return block.includes('\r\n') ? flipped.replace(/\n/gu, '\r\n') : flipped
+      })
+      writeFileSync(patchPath, next)
+      // A longer entry for the row further down still has the last word.
+      if (lastRowFlag(next, rowId) !== 'true') {
+        const result = appendPatchEntry(patchPath, rowBlock(rowId, true))
+        if (!result.ok) return result
+      }
+      logEvent('info', 'patch', `disabled row ${rowId} in ${patchPath}`)
+      return { ok: true, reason: null }
     }
     const state = readUserPatchState(patchPath)
     if (state.disables.includes(rowId)) return { ok: true, reason: null }
@@ -502,7 +562,7 @@ export function disableRow(patchPath: string, rowId: string): Promise<{ ok: bool
   })
 }
 
-/** Enable one row: remove the `disabled: true` block; force-enable with
+/** Enable one row: remove its `disabled: true` blocks; force-enable with
  * `disabled: false` when a lower layer (bundle/home patch) holds it down. */
 export function enableRow(patchPath: string, rowId: string): Promise<{ ok: boolean; reason: string | null }> {
   return queuedWrite(async () => {
@@ -510,12 +570,12 @@ export function enableRow(patchPath: string, rowId: string): Promise<{ ok: boole
       return { ok: false, reason: `行 id 含特殊字符,不支持写入补丁层 / row id ${rowId} cannot be written to the patch layer` }
     }
     const state = readUserPatchState(patchPath)
-    const blockRe = new RegExp(`^- id: ['\"]?${escapeRegExp(rowId)}['\"]?\\r?\\n  disabled: true\\r?\\n`, 'mu')
     const text = (() => {
       try { return readFileSync(patchPath, 'utf8') } catch { return '' }
     })()
-    if (blockRe.test(text)) {
-      writeFileSync(patchPath, withPlaceholderRestored(text.replace(blockRe, '')))
+    const next = text.replace(rowBlocksRe(rowId, 'true'), '')
+    if (next !== text) {
+      writeFileSync(patchPath, withPlaceholderRestored(next))
       logEvent('info', 'patch', `enabled row ${rowId} in ${patchPath}`)
       return { ok: true, reason: null }
     }
@@ -551,10 +611,7 @@ export function removeRowBlocks(patchPath: string, rowIds: readonly string[]): v
     text = readFileSync(patchPath, 'utf8')
   } catch { return }
   let next = text
-  for (const rowId of rowIds) {
-    const blockRe = new RegExp(`^- id: ['\"]?${escapeRegExp(rowId)}['\"]?\\r?\\n  disabled: (?:true|false)\\r?\\n`, 'mu')
-    next = next.replace(blockRe, '')
-  }
+  for (const rowId of rowIds) next = next.replace(rowBlocksRe(rowId, 'any'), '')
   if (next !== text) {
     writeFileSync(patchPath, withPlaceholderRestored(next))
     logEvent('info', 'patch', `removed patch rows for ${rowIds.join(', ')}`)
