@@ -9,10 +9,10 @@ import { join } from 'node:path'
 import { DIST_TAG, type Channel } from './channels.ts'
 import { resolveHeadCommit } from './accelerate.ts'
 import { marketFetch } from './net.ts'
-import { activeRegion } from './regions.ts'
+import { activeRegion, githubRoutesFor, rememberGithubRoute, throughProxy, type Region } from './regions.ts'
 import { hasDshManifest, profileDir, readGitResolutionCommit, readInstalled, readInstalledVersion, readLockCommits, readProfileBundles } from './profile.ts'
 import { userPatchPackageReferences } from './patch.ts'
-import { catalogRepoKey, gitCommitOfTarget, gitRefOfTarget, gitUploadPackUrl, hostedRepoKey, githubCommitOfTarget, githubRefOfTarget, isGenerationLink, isGitHostedSpec, lookupRepoFromUrl, repoOfTarget } from './sources.ts'
+import { catalogRepoKey, gitCommitOfTarget, gitRefOfTarget, gitUploadPackUrl, hasSemverSelector, hostedRepoKey, githubCommitOfTarget, githubRefOfTarget, isGenerationLink, isGitHostedSpec, lookupRepoFromUrl, parseGitHubRemote, repoOfTarget } from './sources.ts'
 
 export interface UpdateStatus {
   /**
@@ -345,6 +345,108 @@ export async function fetchNpmLatest(name: string): Promise<string | null> {
   }
 }
 
+/** How long one raw-file route may take before the next candidate is tried. */
+const RAW_VERSION_TIMEOUT_MS = 6_000
+
+/**
+ * The GitHub repo a spec installs from, plus the subpath whose `package.json`
+ * describes the installed package (#824), or null when the spec is not a
+ * GitHub one.
+ *
+ * Only GitHub gets its version read over the network: `raw.githubusercontent.com`
+ * is the raw spelling this market already speaks (a plugin page's README, a
+ * restore's manifest) and the only one with a per-region escape route. A
+ * gitlab or gitee install keeps the commit comparison, because inventing
+ * another host's raw URL would buy a failed request instead of a verdict.
+ */
+function githubRawTargetOf(spec: string): { repo: string; subpath: string | null } | null {
+  // `github:owner/repo` and `git+https://github.com/…` — the spelling the
+  // market itself writes for a floating install, which is the #824 case —
+  // both answer here, as does the codeload archive URL older regional
+  // installs carry. GitHub matches owner/repo case-insensitively, so the
+  // normalized casing is safe in a raw URL.
+  const repo = parseGitHubRemote(spec)?.repo.toLowerCase()
+    ?? repoOfTarget(spec)?.split('#')[0]
+    ?? null
+  if (repo === null) return null
+  const hash = spec.indexOf('#')
+  const match = hash === -1 ? null : /(?:^|&)path:\/([^&\s]+)/.exec(spec.slice(hash + 1))
+  return { repo, subpath: match === null ? null : match[1]! }
+}
+
+/**
+ * The `version` the repository publishes at the head of its default branch,
+ * or null when it cannot be read (#824).
+ *
+ * Route handling mirrors `resolveHeadCommit`: the region's candidates in
+ * order, the last verified winner first, and that winner remembered for the
+ * next check. Every failure — no candidate answers, a repo with no
+ * `package.json`, a body that is not JSON — is null, so the caller falls back
+ * to comparing commits rather than claiming the install is current.
+ */
+async function remoteGitVersion(spec: string, region: Region): Promise<string | null> {
+  const target = githubRawTargetOf(spec)
+  if (target === null) return null
+  const file = target.subpath === null ? 'package.json' : `${target.subpath}/package.json`
+  const url = `https://raw.githubusercontent.com/${target.repo}/HEAD/${file}`
+  for (const route of githubRoutesFor('raw', region)) {
+    try {
+      const res = await marketFetch(throughProxy(route, url), {
+        headers: { accept: 'application/json', 'user-agent': 'dsh-market' },
+        signal: AbortSignal.timeout(RAW_VERSION_TIMEOUT_MS),
+      })
+      if (!res.ok) continue
+      const doc = await res.json() as { version?: unknown }
+      const version = typeof doc.version === 'string' ? doc.version.trim() : ''
+      if (version === '') continue
+      rememberGithubRoute('raw', route)
+      return version
+    } catch {
+      // This route did not answer; the next candidate may.
+    }
+  }
+  return null
+}
+
+/**
+ * Whether the repository's own `version` says there is something to install,
+ * for a git install that follows whatever the default branch points at (#824).
+ *
+ * A floating git install has no release boundary: every commit the branch
+ * gains makes the commit comparison unequal, so the row advertised "有新版本"
+ * forever while pnpm would install the same version the plugin's own updater
+ * had already put on disk. That is the mirror image of #446/#597 — those
+ * compared commits against a ref the user never chose; this one degrades the
+ * ref the user did choose, where "the line moved" is not the same question as
+ * "there is something new to install".
+ *
+ * @returns true/false when both versions are readable and comparable, and
+ *   null when the question cannot be answered that way: no installed version,
+ *   a spec that names a branch or tag on purpose (that line IS the user's
+ *   choice), a non-GitHub host, an unreachable raw file, or a version on
+ *   either side that is not semver. On null the caller must compare commits —
+ *   never read null as "current", or a private host would stop reporting
+ *   updates altogether.
+ */
+async function gitVersionUpdate(
+  spec: string,
+  installedVersion: string | null,
+  region: Region,
+): Promise<boolean | null> {
+  if (installedVersion === null) return null
+  // `#branch`, `#tag`, and `#semver:` installs chose a line of their own: a
+  // new commit on it is exactly what those users asked to hear about (#446).
+  // `refOfFragment` skips `semver:` ranges (they compare against the default
+  // branch), so they need their own probe — otherwise a range pinned at ^2
+  // with a 3.0.0 at HEAD would advertise an install the range cannot produce.
+  const explicitRef = spec.startsWith('github:') ? githubRefOfTarget(spec) : gitRefOfTarget(spec)
+  if (explicitRef !== null || hasSemverSelector(spec)) return null
+  const remoteVersion = await remoteGitVersion(spec, region)
+  if (remoteVersion === null) return null
+  const compared = compareVersions(remoteVersion, installedVersion)
+  return compared === null ? null : compared > 0
+}
+
 /** Per-plugin update checks; a failed check reports no update rather than failing the listing. */
 export async function checkUpdates(
   profile: string,
@@ -453,9 +555,14 @@ export async function checkUpdates(
         const latest = await resolveHeadCommit(
           repo, activeRegion(), process.env, githubRefOfTarget(spec) ?? undefined,
         )
+        // A floating install has no release boundary: the commit comparison
+        // alone advertised "有新版本" forever on a branch that moved without
+        // publishing (#824). The repository's own version decides when both
+        // sides are readable; commits decide everything else.
+        const byVersion = await gitVersionUpdate(spec, version, activeRegion())
         result[name] = {
           kind: 'github', version, current, latest,
-          updateAvailable: current !== null && latest !== null && current !== latest,
+          updateAvailable: byVersion ?? (current !== null && latest !== null && current !== latest),
         }
       } else if (isGitHostedSpec(spec)) {
         // Private / self-hosted git (Gitea, GitLab, raw git+https). Never ask
@@ -474,9 +581,12 @@ export async function checkUpdates(
         // Ask about the ref the install actually names, exactly as the
         // github branch above does (#446).
         const latest = await resolveGitRemoteHead(spec, gitRefOfTarget(spec) ?? undefined)
+        // Same rule as the github branch above (#824): the repository's own
+        // version decides when both sides are readable, commits otherwise.
+        const byVersion = await gitVersionUpdate(spec, version, activeRegion())
         result[name] = {
           kind: 'github', version, current, latest,
-          updateAvailable: current !== null && latest !== null && current !== latest,
+          updateAvailable: byVersion ?? (current !== null && latest !== null && current !== latest),
         }
       } else {
         // A URL install (release archive, self-hosted tarball) has no

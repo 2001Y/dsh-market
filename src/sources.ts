@@ -264,6 +264,21 @@ export function gitRefOfTarget(spec: string): string | null {
   return refOfFragment(spec)
 }
 
+/**
+ * True when the spec's `#…` fragment carries a `semver:` range selector.
+ *
+ * A semver range is a line the user chose on purpose, like a branch: pnpm
+ * re-resolves inside that range, so a raw HEAD version ABOVE the range is not
+ * installable — asking it would advertise an update forever (#446 shape).
+ * `refOfFragment` deliberately answers null for those, so the update check
+ * needs this separate probe.
+ */
+export function hasSemverSelector(spec: string): boolean {
+  const fragmentAt = spec.indexOf('#')
+  if (fragmentAt === -1) return false
+  return spec.slice(fragmentAt + 1).split('&').some(s => s.startsWith('semver:'))
+}
+
 /** The branch or tag a `#…` fragment selects, or null for the default branch. */
 function refOfFragment(spec: string): string | null {
   const fragmentAt = spec.indexOf('#')
