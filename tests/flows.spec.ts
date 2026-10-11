@@ -5833,6 +5833,38 @@ describe('build-script approval flow (#6)', () => {
     expect(yaml).toContain(`plug-c@https://codeload.github.com/o/r/tar.gz/${sha}: true`)
   })
 
+  it('writes both pinned key forms so either pnpm fetch mode can match (#784)', async () => {
+    // Which pinned key pnpm 11.7.0 checks depends on HOW it fetches the
+    // dependency, not on how the spec is spelled: a codeload download checks
+    // the codeload key (review-measured on 11.7.0 with an empty store: the
+    // codeload key passes, the git+https#sha one is refused), while a git
+    // clone names the git+https#sha key in its own refusal — the form seen on
+    // dsh-better-sidebar (#784). Writing only one form left whichever fetch
+    // mode ran with no key pnpm would read. Both are written; the git+https
+    // one keeps the manifest's own `.git` spelling, which pnpm matches
+    // literally (#665/#695).
+    const sha = 'b0e6c57ebeeb4796017864f5cd5c66e6ba0899ec'
+    mkdirSync(join(profileDir('web'), 'node_modules', 'better-sidebar'), { recursive: true })
+    writeFileSync(join(profileDir('web'), 'node_modules', 'better-sidebar', 'package.json'), '{"name":"better-sidebar"}')
+    const manifestPath = join(profileDir('web'), 'package.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.dependencies = { ...manifest.dependencies, 'better-sidebar': `git+https://github.com/o/better-sidebar.git#${sha}` }
+    writeFileSync(manifestPath, JSON.stringify(manifest))
+    // The installed pin is authoritative; an approval must not need the network.
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+
+    const approve = await bed.dispatch('POST', '/dsh-market/approve-builds', { packages: ['better-sidebar'] })
+
+    expect(approve.status).toBe(200)
+    const yaml = readFileSync(join(profileDir('web'), 'pnpm-workspace.yaml'), 'utf8')
+    // pnpm 11.21+ matches the stable clone URL…
+    expect(yaml).toContain('better-sidebar@git+https://github.com/o/better-sidebar.git: true')
+    // …a codeload download the commit-pinned codeload tarball…
+    expect(yaml).toContain(`better-sidebar@https://codeload.github.com/o/better-sidebar/tar.gz/${sha}: true`)
+    // …and a git clone the pinned git+https key, in the remote's own spelling.
+    expect(yaml).toContain(`better-sidebar@git+https://github.com/o/better-sidebar.git#${sha}: true`)
+  })
+
   it('writes both allowBuilds key forms for a gitlab-sourced dependency (#637)', async () => {
     // Until #637 these installs were replaced by a same-named npm package on
     // update, so nobody reached the build-approval layer with one. Now they
@@ -5987,6 +6019,23 @@ describe('build-script approval flow (#6)', () => {
     // key (what 11.6+ matches) — and nothing the request supplied.
     expect(yaml).toContain("'@dsh-external/dsh-super-injector': true")
     expect(yaml).toContain(printed)
+  })
+
+  it('persists pnpm\'s printed key across a restart (#784)', async () => {
+    // The printed key named the commit the pending install fetches — the one
+    // thing the approve button could not derive. It used to live in an
+    // in-memory map, so a DSH restart between the failure and the click
+    // dropped it. The write side is asserted here: the refusal below must
+    // land in <dsh-home>/dsh-market/printed-build-keys.json, from where the
+    // (lazily loaded) map serves it to a later approve.
+    const printed = 'dsh-keep-key@https://codeload.github.com/omdsh-dev/dsh-security-audit/tar.gz/b0e6c57ebeeb4796017864f5cd5c66e6ba0899ec'
+    fake.failNextAddStderrOnce = '[ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED] Failed to prepare git-hosted package fetched from "https://codeload.github.com/omdsh-dev/dsh-security-audit/tar.gz/b0e6c57ebeeb4796017864f5cd5c66e6ba0899ec": The git-hosted package "dsh-keep-key@0.3.3" needs to execute build scripts but is not in the "allowBuilds" allowlist.\n'
+      + 'Add the package to "allowBuilds" in your project\'s pnpm-workspace.yaml to allow it to run scripts. For example:\n'
+      + `allowBuilds:\n  ${printed}: true\n`
+    const first = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/omdsh-dev/dsh-security-audit' })
+    expect(first.status).toBe(502)
+    const persisted = JSON.parse(readFileSync(join(home, 'dsh-market', 'printed-build-keys.json'), 'utf8')) as Record<string, string>
+    expect(persisted['dsh-keep-key']).toBe(printed)
   })
 
   it('approves a git UPDATE with the key pnpm printed, not the stale installed pin', async () => {

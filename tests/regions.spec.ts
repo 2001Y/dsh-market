@@ -13,7 +13,7 @@ import {
   activeRegion, asRegion, DEFAULT_NPM_REGISTRY, githubRoutesFor, REGIONS, rememberGithubRoute,
   resetGithubRoutePreferences, routesFor, setActiveRegion, setCustomGithubProxy, throughProxy,
 } from '../src/regions.ts'
-import { codeloadAllowBuildsKey, codeloadTarball, githubCommitOfTarget, gitAllowBuildsKey, pinnedGitAllowBuildsKey, repoOfTarget } from '../src/sources.ts'
+import { codeloadAllowBuildsKey, codeloadTarball, githubCommitOfTarget, gitAllowBuildsKey, githubRepoOfRemote, pinnedAllowBuildsKeys, pinnedGitAllowBuildsKey, repoOfTarget } from '../src/sources.ts'
 import { githubProxyInUse, githubUrl, setGithubProxy } from '../src/client/market-data.ts'
 
 const SHA = 'b0e6c57ebeeb4796017864f5cd5c66e6ba0899ec'
@@ -280,6 +280,60 @@ describe('browser-side github URLs', () => {
     setGithubProxy(null)
     expect(githubUrl('https://raw.githubusercontent.com/o/r/HEAD/README.md'))
       .toBe('https://raw.githubusercontent.com/o/r/HEAD/README.md')
+  })
+})
+
+describe('pinnedAllowBuildsKeys (#784)', () => {
+  const SHA = 'b0e6c57ebeeb4796017864f5cd5c66e6ba0899ec'
+
+  it('writes BOTH pinned forms for a github: shortcut', () => {
+    // Which pinned key pnpm checks depends on how it fetches, not on how the
+    // spec is spelled: a codeload download matches the codeload key, a git
+    // clone the commit-pinned git+https key. One form without the other is
+    // the structural gap #784 reported: the fetch mode that ran had no key
+    // pnpm would read, and only pnpm's own printed key could save the retry.
+    expect(pinnedAllowBuildsKeys('p', 'github:o/r', SHA)).toEqual([
+      `p@https://codeload.github.com/o/r/tar.gz/${SHA}`,
+      `p@git+https://github.com/o/r.git#${SHA}`,
+    ])
+  })
+
+  it('pins a git+https GitHub remote under the remote\'s own spelling (#803/#695)', () => {
+    // pnpm itself writes `git+https://owner/repo.git` into the manifest for a
+    // GitHub source (#803), and matches the git+https key literally as the
+    // remote spells itself — with or without `.git` (#665/#695). The codeload
+    // key is derived for this spelling too: the repo is GitHub's whichever
+    // way the spec names it.
+    expect(pinnedAllowBuildsKeys('p', 'git+https://github.com/o/r.git', SHA)).toEqual([
+      `p@https://codeload.github.com/o/r/tar.gz/${SHA}`,
+      `p@git+https://github.com/o/r.git#${SHA}`,
+    ])
+    expect(pinnedAllowBuildsKeys('p', 'git+https://github.com/o/r', SHA)).toEqual([
+      `p@https://codeload.github.com/o/r/tar.gz/${SHA}`,
+      `p@git+https://github.com/o/r#${SHA}`,
+    ])
+    expect(githubRepoOfRemote('git+https://github.com/o/r.git')).toBe('o/r')
+    expect(githubRepoOfRemote('git+https://gitea.example.com/me/plug.git')).toBeNull()
+  })
+
+  it('covers a proxied codeload spelling with the repo it proxies', () => {
+    expect(pinnedAllowBuildsKeys('p', `https://gh-proxy.com/https://codeload.github.com/o/r/tar.gz/${SHA}`, SHA))
+      .toEqual([
+        `p@https://codeload.github.com/o/r/tar.gz/${SHA}`,
+        `p@git+https://github.com/o/r.git#${SHA}`,
+      ])
+  })
+
+  it('keeps the single remote#sha form for non-GitHub hosts (#637)', () => {
+    expect(pinnedAllowBuildsKeys('p', 'git+https://gitea.example.com/me/plug.git', SHA))
+      .toEqual([`p@git+https://gitea.example.com/me/plug.git#${SHA}`])
+    expect(pinnedAllowBuildsKeys('p', 'bitbucket:o/r', SHA))
+      .toEqual([`p@https://bitbucket.org/o/r/get/${SHA}.tar.gz`])
+  })
+
+  it('refuses a non-sha and a non-git spec', () => {
+    expect(pinnedAllowBuildsKeys('p', 'github:o/r', 'main')).toEqual([])
+    expect(pinnedAllowBuildsKeys('p', 'themer', SHA)).toEqual([])
   })
 })
 
