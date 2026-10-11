@@ -49,7 +49,11 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 10
-      - run: npm install
+      # Install from the lockfile: dependency changes reach CI only through a
+      # lockfile diff, which can be reviewed — and `npm ci` refuses to run
+      # when package.json and the lockfile disagree, instead of silently
+      # resolving something new.
+      - run: npm ci
       - run: npm run check
       # The committed client bundle must be reproducible from the committed
       # source (#472, and the review-noise half of the same problem: a
@@ -89,7 +93,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - run: npm install
+      - run: npm ci
       - run: npm run test:compat
 
   # Layer-3 web e2e: real dsh (pinned rc) + packed market + real Chromium.
@@ -157,7 +161,8 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 10
-      - run: npm install
+      # Same as the check job: lockfile-exact installs.
+      - run: npm ci
       # rc.8+: earlier CLIs unconditionally launched a system browser on
       # `dsh web` boot, which on the Windows runner left orphaned msedge
       # processes and the status endpoint never answering — read as a
