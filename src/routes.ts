@@ -150,8 +150,8 @@ export interface MarketConfig {
    * hot-mounting it (#814). A desktop shell that watches the profile replays
    * the composition itself, about two seconds after the manifest lands; one
    * that does not publish `pluginActivation` gives the market no way to ask,
-   * and mounting first made the host's replay fail as a duplicate. Unset
-   * means no host replay is expected.
+   * and mounting first made the host's replay fail as a duplicate. Unset,
+   * the wait follows the host's own profile watcher instead (#827).
    */
   hostReplayWaitMs?: number
   /** Detached self-restart is unsafe under systemd/launchd/pm2; operators can disable it (#14). */
@@ -308,6 +308,17 @@ function declaresBundle(profileDirectory: string, name: string): boolean {
     return false
   }
 }
+
+/**
+ * The host's profile watcher (#827). While its entry is live, a change to
+ * `dsh.profile.bundles` makes the host compose the new bundle itself, about
+ * two seconds after the manifest settles — on a plain `dsh web` as much as on
+ * a desktop shell. A market mount made before that replay is a second copy of
+ * the same rows, and the replay then fails on the routes the copy holds.
+ */
+const PROFILE_HMR_ENTRY = '@deepseek-ai/dsh-hmr'
+/** How long to wait for that replay before mounting: the same ceiling as #814. */
+const PROFILE_HMR_REPLAY_WAIT_MS = 8000
 
 /**
  * The allowBuilds key pnpm itself printed when it refused a build, per package
@@ -6126,13 +6137,17 @@ sendJson(response, 200, { updates })
                     let adopted = isAdopted()
                     // The replay lands after pnpm returns, not before (#814):
                     // give a host that replays on its own the time to do it.
-                    const waitUntil = Date.now() + (config.hostReplayWaitMs ?? 0)
+                    // The profile watcher replays only what the manifest lists
+                    // as a bundle, so a client-only package is not waited for.
+                    const replayWaitMs = config.hostReplayWaitMs
+                      ?? (declaresBundle(activeProfileDir, name) && liveNames().has(PROFILE_HMR_ENTRY) ? PROFILE_HMR_REPLAY_WAIT_MS : 0)
+                    const waitUntil = Date.now() + replayWaitMs
                     while (!adopted && Date.now() < waitUntil) {
                       await new Promise(resolve => setTimeout(resolve, 250))
                       adopted = isAdopted()
                     }
-                    if (adopted && config.hostReplayWaitMs !== undefined) {
-                      logEvent('info', 'install', `${name}: the host's own replay activated it; adopted instead of mounting a second copy (#814)`)
+                    if (adopted && replayWaitMs > 0) {
+                      logEvent('info', 'install', `${name}: the host's own replay activated it; adopted instead of mounting a second copy (#814, #827)`)
                     }
                     let live = adopted
                     if (!adopted && !pluginCategories(entry).includes('theme')) {
