@@ -738,3 +738,147 @@ describe('checkUpdates — a plain dependency is not an update the market can ap
     finally { vi.unstubAllGlobals(); rmSync(dir, { recursive: true, force: true }) }
   })
 })
+
+describe('checkUpdates — a floating git install follows the repository\'s version, not its branch head (#824)', () => {
+  /**
+   * The report: `dsh-our-free-model` was installed floating
+   * (`git+https://github.com/…/dsh-our-free-model.git`, no pin). The plugin's
+   * own updater had already put 2.0.0 on disk, and upstream's only changes
+   * since were catalog re-signings — commits with the SAME version. The
+   * market compared the lockfile commit to the branch HEAD, found them
+   * unequal, and advertised "有新版本 <sha>" on every poll, forever, for an
+   * update that installs nothing new.
+   *
+   * The fix asks the only question whose answer means "there is something to
+   * install": did the repository's own `version` move? A floating install
+   * gets whatever the default branch points at, so the branch moving is not
+   * news. Every case where that question cannot be answered — no readable
+   * version, a non-GitHub host, a non-semver value, a spec that names its own
+   * ref — must fall back to the commit comparison, never to "current".
+   */
+  const HEAD = 'a'.repeat(40)
+  const OLD = 'b'.repeat(40)
+  let home: string
+
+  /** Profile with one floating git+https GitHub install at lock commit `commit`. */
+  function profileWith(spec: string, commit: string, version = '2.0.0', lockExtra = ''): string {
+    const dir = join(mkdtempSync(join(tmpdir(), 'dshm-824-')), 'profiles', 'web')
+    mkdirSync(join(dir, 'node_modules', 'themer'), { recursive: true })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { themer: spec } }))
+    writeFileSync(join(dir, 'node_modules', 'themer', 'package.json'), JSON.stringify({ name: 'themer', version, dsh: { bundle: { patch: './cordis.patch.yml' } } }))
+    writeFileSync(join(dir, 'pnpm-lock.yaml'),
+      `lockfileVersion: 9\npackages:\n  themer@${spec}:\n    resolution: {commit: ${commit}, repo: ${spec}, type: git${lockExtra}}\n`)
+    return dir
+  }
+
+  /** Answers the git advertisement with `head` and raw HEAD package.json with `version` (null = unreachable). */
+  function stubGitAndRaw(head: string, version: string | null): { rawHits: () => number } {
+    let rawHits = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const href = String(url)
+      if (href.includes('raw.githubusercontent.com')) {
+        rawHits += 1
+        return version === null
+          ? { ok: false, status: 404, json: async () => ({}) }
+          : { ok: true, status: 200, json: async () => ({ version }) }
+      }
+      return {
+        ok: true, status: 200,
+        headers: { get: () => 'application/x-git-upload-pack-advertisement' },
+        json: async () => ({}),
+        text: async () => `001e# service=git-upload-pack\n00000155${head} HEAD\0multi_ack symref=HEAD:refs/heads/main\n`
+          + `003f${head} refs/heads/main\n`,
+      }
+    }))
+    return { rawHits: () => rawHits }
+  }
+
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'dshm-824home-')) })
+  afterEach(() => { vi.unstubAllGlobals(); rmSync(home, { recursive: true, force: true }) })
+
+  it('stops advertising an update when the branch moved but the version did not (#824)', async () => {
+    // The exact shape of the report: lock commit OLD, remote HEAD newer,
+    // both sides version 2.0.0. Before the fix this row read
+    // updateAvailable: true forever.
+    const spec = 'git+https://github.com/zouyuxuan122/dsh-our-free-model.git'
+    stubGitAndRaw(HEAD, '2.0.0')
+    const result = await checkUpdates('web', true, profileWith(spec, OLD))
+    expect(result.themer).toMatchObject({ kind: 'github', version: '2.0.0', current: OLD, latest: HEAD, updateAvailable: false })
+  })
+
+  it('still advertises the update when the repository published a newer version', async () => {
+    const spec = 'git+https://github.com/zouyuxuan122/dsh-our-free-model.git'
+    stubGitAndRaw(HEAD, '2.1.0')
+    const result = await checkUpdates('web', true, profileWith(spec, OLD))
+    expect(result.themer).toMatchObject({ current: OLD, latest: HEAD, updateAvailable: true })
+  })
+
+  it('does not offer a downgrade when the remote version reads older than the install', async () => {
+    // A rolled-back default branch is not an update; only forwards counts,
+    // same rule as the npm branch (`isUpgrade`).
+    const spec = 'git+https://github.com/zouyuxuan122/dsh-our-free-model.git'
+    stubGitAndRaw(HEAD, '1.9.0')
+    const result = await checkUpdates('web', true, profileWith(spec, OLD))
+    expect(result.themer).toMatchObject({ updateAvailable: false })
+  })
+
+  it('applies the same rule to the github: shorthand spelling of a floating install', async () => {
+    // #824 also named `github:omdsh-dev/DSH-better-sidebar`: same disease,
+    // different spec spelling. Both spellings must take the same verdict.
+    stubGitAndRaw(HEAD, '2.0.0')
+    const result = await checkUpdates('web', true, profileWith('github:owner/themer', OLD))
+    expect(result.themer).toMatchObject({ updateAvailable: false })
+  })
+
+  it('falls back to the commit comparison when the raw version cannot be read', async () => {
+    // Private repo, no package.json at HEAD, or raw unreachable in this
+    // region: "cannot tell" must degrade to the old behaviour, not to
+    // "current" — otherwise an unreachable host stops reporting updates.
+    const spec = 'git+https://github.com/zouyuxuan122/dsh-our-free-model.git'
+    stubGitAndRaw(HEAD, null)
+    const result = await checkUpdates('web', true, profileWith(spec, OLD))
+    expect(result.themer).toMatchObject({ current: OLD, latest: HEAD, updateAvailable: true })
+  })
+
+  it('falls back to the commit comparison when the remote version is not semver', async () => {
+    const spec = 'git+https://github.com/zouyuxuan122/dsh-our-free-model.git'
+    stubGitAndRaw(HEAD, 'not-a-version')
+    const result = await checkUpdates('web', true, profileWith(spec, OLD))
+    expect(result.themer).toMatchObject({ updateAvailable: true })
+  })
+
+  it('never consults the version of a spec that names its own ref (#446)', async () => {
+    // `#branch` chose a line deliberately; a new commit on it is exactly
+    // what that user asked to hear about. The raw file must not even be
+    // requested.
+    const spec = 'git+https://github.com/zouyuxuan122/dsh-our-free-model.git#main'
+    const { rawHits } = stubGitAndRaw(HEAD, '2.0.0')
+    const result = await checkUpdates('web', true, profileWith(spec, OLD))
+    expect(rawHits(), 'a pinned ref must not trigger a raw version read').toBe(0)
+    expect(result.themer).toMatchObject({ current: OLD, latest: HEAD, updateAvailable: true })
+  })
+
+  it('reads the package.json of the subpath a monorepo spec points at', async () => {
+    // `path:/packages/themer` installs from a subdirectory; the version that
+    // matters is the one in THAT package.json, not the repo root's.
+    const spec = 'github:owner/monorepo#path:/packages/themer'
+    let askedFor = ''
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const href = String(url)
+      if (href.includes('raw.githubusercontent.com')) {
+        askedFor = href
+        return { ok: true, status: 200, json: async () => ({ version: '2.0.0' }) }
+      }
+      return {
+        ok: true, status: 200,
+        headers: { get: () => 'application/x-git-upload-pack-advertisement' },
+        json: async () => ({}),
+        text: async () => `001e# service=git-upload-pack\n00000155${HEAD} HEAD\0multi_ack symref=HEAD:refs/heads/main\n`
+          + `003f${HEAD} refs/heads/main\n`,
+      }
+    }))
+    const result = await checkUpdates('web', true, profileWith(spec, OLD, '2.0.0', ', path: /packages/themer'))
+    expect(askedFor.endsWith('/packages/themer/package.json'), askedFor).toBe(true)
+    expect(result.themer).toMatchObject({ updateAvailable: false })
+  })
+})
