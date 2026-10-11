@@ -31,7 +31,7 @@ import {
   type PluginCommandRuntime,
 } from './dsh-cli.ts'
 import { packageOfEntryName } from './entry-identity.ts'
-import { addProfileBundle, allowBuildsNames, bundlePatchInsertedIds, bundlesDroppedFromProfile, declareProfileDependency, dropFromManifest, hasLoadableEntry, holdsNativeAddon, INBOX_BUNDLES, isDshProfileName, profileDir, readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledPackageName, readInstalledRepoEvidence, readInstalledVersion, readLockCommits, readProfileBundles, readProfileManifestSnapshot, removeProfileBundle, restoreProfileManifest, setAllowBuilds, type ProfileManifestSnapshot } from './profile.ts'
+import { addProfileBundle, bundlePatchInsertedIds, bundlesDroppedFromProfile, declareProfileDependency, dropFromManifest, hasLoadableEntry, holdsNativeAddon, INBOX_BUNDLES, isDshProfileName, profileDir, readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledPackageName, readInstalledRepoEvidence, readInstalledVersion, readLockCommits, readProfileBundles, readProfileManifestSnapshot, removeProfileBundle, restoreProfileManifest, setAllowBuilds, type ProfileManifestSnapshot } from './profile.ts'
 import { assessProfile, classifyPeer, introducedDuplicateNames, introducedRisks, type CompatibilityRisk } from './compatibility.ts'
 import { runningAgentIds, type AgentsLookup } from './agents.ts'
 import { analyzeProfile, corePackageNames, type DuplicateName } from './check.ts'
@@ -4463,39 +4463,6 @@ sendJson(response, 200, { updates })
             if (pinnedForIdentification) {
               declareProfileDependency(config.profile, name, pinValue, activeProfileDir)
             }
-            // #784: the updater already knows the commit the add below will
-            // fetch, so the pinned allowBuilds keys for THAT commit are
-            // written BEFORE pnpm runs, instead of failing the run and making
-            // the user press "allow build scripts" on the way back. Both
-            // pinned spellings go in (codeload and git+https#sha) because the
-            // form pnpm matches varies with its version and with the
-            // manifest's own spelling of the remote.
-            //
-            // Consent anchor: only when the profile ALREADY carries an
-            // allowBuilds entry for this package — the updater extends an
-            // approval the user gave, it never creates one. Best-effort by
-            // design: a resolution or write that fails here changes nothing,
-            // and the failure path (banner → approve-and-retry) still works.
-            if (isGit && !restore) {
-              try {
-                const alreadyAllowed = allowBuildsNames(config.profile, activeProfileDir)
-                  .some(key => key === name || key.startsWith(`${name}@`))
-                if (alreadyAllowed) {
-                  const nextCommit = repoKey !== null
-                    ? githubCommitOfTarget(target) ?? await resolveHeadCommit(repoKey, region)
-                    : gitCommitOfTarget(target) ?? await resolveGitRemoteHead(spec, gitRefOfTarget(spec) ?? undefined)
-                  if (nextCommit != null) {
-                    const preKeys = pinnedAllowBuildsKeys(name, spec, nextCommit)
-                    if (preKeys.length > 0) {
-                      setAllowBuilds(config.profile, preKeys, activeProfileDir)
-                      logEvent('info', 'update', `${name}: pre-authorized build keys for the incoming commit ${nextCommit.slice(0, 7)} (#784)`)
-                    }
-                  }
-                }
-              } catch (error) {
-                logEvent('warn', 'update', `${name}: build-key prewrite skipped — ${error instanceof Error ? error.message : String(error)}`)
-              }
-            }
             const result = await runPlugin(config.profile, addArgs)
             const cancelled = result.cancelled
             // The pin above is the market's own write, so it is undone whenever
@@ -5470,11 +5437,11 @@ sendJson(response, 200, { updates })
               : gitCommitOfTarget(spec)
                 ?? await resolveGitRemoteHead(spec, gitRefOfTarget(spec) ?? undefined)
             if (pinned === null || pinned === undefined) return [stable]
-            // Both pinned forms per spelling (#784): pnpm 11.8-ish matches the
-            // codeload key, 11.7.0 — what DSH Desktop bundles — matches the
-            // commit-pinned git+https key that follows the MANIFEST's own
-            // spelling of the remote. Deriving only codeload left every
-            // git+https-spelled GitHub dependency with no key pnpm would
+            // Both pinned key forms, for either fetch mode (#784): a codeload
+            // download matches the codeload key (review-measured on 11.7.0,
+            // empty store), while a git clone matches the commit-pinned
+            // git+https key, in the remote's own spelling. Deriving only the
+            // codeload form left a git-clone fetch with no key pnpm would
             // read.
             const pinnedKeys = pinnedAllowBuildsKeys(name, spec, pinned)
             return pinnedKeys.length === 0 ? [stable] : [stable, ...pinnedKeys]

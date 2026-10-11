@@ -411,9 +411,9 @@ export function pinnedGitAllowBuildsKey(name: string, spec: string, sha: string)
  * (`git+https://github.com/owner/repo.git`), or null for anything else.
  *
  * pnpm itself writes this spelling into the manifest for a GitHub source —
- * the market sends `github:owner/repo`, pnpm 11.7.0 answers with
- * `git+https://owner/repo.git` (#803) — and the allowBuilds key that pnpm
- * then checks follows the MANIFEST's spelling, not the target's (#784).
+ * the market sends `github:owner/repo`, pnpm answers with
+ * `git+https://owner/repo.git` (#803) — so the market must recognize it to
+ * keep deriving the GitHub keys for deps that only ever appear this way.
  */
 export function githubRepoOfRemote(spec: string): string | null {
   const remote = gitRemoteSpelling(spec)
@@ -427,23 +427,26 @@ export function githubRepoOfRemote(spec: string): string | null {
  * Every commit-pinned allowBuilds key for one git source at one known commit
  * (#784 by @sanqi-normal follow-up).
  *
- * The key form follows the spelling pnpm will read, and that varies by pnpm
- * version AND by how the manifest spells the dependency:
+ * Which pinned key pnpm checks depends on HOW it fetches the dependency,
+ * not on how the spec is spelled (review-measured on 11.7.0, empty store:
+ * a codeload download passes the codeload key and refuses the git+https#sha
+ * one; the git+https#sha refusal seen on dsh-better-sidebar came from a git
+ * clone fetch):
  * - pnpm 11.21+ matches the stable unpinned clone-URL key (`gitAllowBuildsKey`).
- * - pnpm 11.8-ish matches the commit-pinned codeload tarball URL.
- * - pnpm 11.7.0 — what DSH Desktop bundles — matches the commit-pinned
- *   `name@git+https://…#<sha>` form, and only when it matches how the
- *   manifest spells the remote (with or without `.git`, #695).
+ * - a codeload download matches the commit-pinned codeload tarball URL.
+ * - a git clone matches the commit-pinned `name@git+https://…#<sha>` form,
+ *   and only when it matches the remote's own spelling (`.git` or not,
+ *   #665/#695 — pnpm matches the key literally).
  *
  * Writing ONE pinned form was the structural gap: a GitHub source derived
- * only its codeload key, which pnpm 11.7.0 never reads, so the derived key
- * missed entirely and only pnpm's own printed key could save the retry
- * (#784's evidence). When the commit is known, BOTH pinned forms are
- * written — one extra line in a YAML file versus the only button that could
- * have unblocked the user.
+ * only its codeload key, so a git-clone fetch ran with no key pnpm would
+ * read and only pnpm's own printed key could save the retry (#784's
+ * evidence). When the commit is known, BOTH pinned forms are written — one
+ * extra line in a YAML file versus the only button that could have
+ * unblocked the user.
  *
- * Non-GitHub remotes keep `pinnedGitAllowBuildsKey`'s single form: their
- * pnpm-checked key does not vary by spelling the way GitHub's does.
+ * Non-GitHub remotes keep `pinnedGitAllowBuildsKey`'s single form: one key
+ * covers their fetch mode.
  *
  * @param sha - the commit the install will actually fetch.
  * @returns the pinned keys (empty for no known git shape); callers merge the
@@ -453,10 +456,10 @@ export function pinnedAllowBuildsKeys(name: string, spec: string, sha: string): 
   if (!/^[0-9a-f]{40}$/.test(sha)) return []
   const githubRepo = repoFromTarget(spec)?.repo ?? githubRepoOfRemote(spec)
   if (githubRepo !== null) {
-    // The git+https pinned form keeps the manifest's own spelling of the
-    // remote (`.git` or not), which is what pnpm matches literally (#695):
-    // reuse the stable key when one was derived, and only fall back to the
-    // canonical `.git` spelling when it was not.
+    // The git+https pinned form keeps the remote's own spelling (`.git` or
+    // not), which is what pnpm matches literally (#665/#695): reuse the
+    // stable key when one was derived, and only fall back to the canonical
+    // `.git` spelling when it was not.
     const stable = gitAllowBuildsKey(name, spec)
     const gitHttps = stable !== null && stable.startsWith(`${name}@git+https://`)
       ? `${stable}#${sha}`

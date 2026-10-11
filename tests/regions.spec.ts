@@ -287,21 +287,23 @@ describe('pinnedAllowBuildsKeys (#784)', () => {
   const SHA = 'b0e6c57ebeeb4796017864f5cd5c66e6ba0899ec'
 
   it('writes BOTH pinned forms for a github: shortcut', () => {
-    // pnpm 11.8-ish matches the codeload key; 11.7.0 — what DSH Desktop
-    // bundles — matches the commit-pinned git+https key. One form without
-    // the other is the structural gap #784 reported: the derived key missed
-    // entirely and only pnpm's own printed key could save the retry.
+    // Which pinned key pnpm checks depends on how it fetches, not on how the
+    // spec is spelled: a codeload download matches the codeload key, a git
+    // clone the commit-pinned git+https key. One form without the other is
+    // the structural gap #784 reported: the fetch mode that ran had no key
+    // pnpm would read, and only pnpm's own printed key could save the retry.
     expect(pinnedAllowBuildsKeys('p', 'github:o/r', SHA)).toEqual([
       `p@https://codeload.github.com/o/r/tar.gz/${SHA}`,
       `p@git+https://github.com/o/r.git#${SHA}`,
     ])
   })
 
-  it('pins a git+https-spelled GitHub remote under its own spelling (#803/#695)', () => {
+  it('pins a git+https GitHub remote under the remote\'s own spelling (#803/#695)', () => {
     // pnpm itself writes `git+https://owner/repo.git` into the manifest for a
-    // GitHub source, and keys the allowBuilds entry exactly as spelled — with
-    // or without `.git`. The codeload key is derived for this spelling too:
-    // the repo is GitHub's whichever way the spec names it.
+    // GitHub source (#803), and matches the git+https key literally as the
+    // remote spells itself — with or without `.git` (#665/#695). The codeload
+    // key is derived for this spelling too: the repo is GitHub's whichever
+    // way the spec names it.
     expect(pinnedAllowBuildsKeys('p', 'git+https://github.com/o/r.git', SHA)).toEqual([
       `p@https://codeload.github.com/o/r/tar.gz/${SHA}`,
       `p@git+https://github.com/o/r.git#${SHA}`,
