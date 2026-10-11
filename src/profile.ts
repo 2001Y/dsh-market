@@ -1405,11 +1405,17 @@ export function mergeDuplicateReleaseAgeExcludes(profile: string, explicitDir?: 
   const file = join(profileDir(profile, explicitDir), 'pnpm-workspace.yaml')
   let yaml: string
   try { yaml = readFileSync(file, 'utf8') } catch { return [] }
-  // Block form only: `minimumReleaseAgeExclude:` then `- <entry>` lines, with
-  // comment lines allowed among them. Users annotate why a version is exempt,
-  // and a comment line used to end the block — or veto the whole repair — so
-  // the very profiles someone had tended by hand stayed broken (#816).
-  const blockRe = /^minimumReleaseAgeExclude:[ \t]*\r?\n((?:(?:[ \t]+-[^\r\n]*|[ \t]*#[^\r\n]*)\r?\n?)*)/m
+  // Block form only: `minimumReleaseAgeExclude:` then INDENTED lines — `- <entry>`
+  // entries, comment lines among them, and the continuations of a folded entry.
+  // Two shapes used to end the block early, each truncating the entry cut by it:
+  // a comment line inside the block (#816), and a folded entry — pnpm wrapping a
+  // long `||` union across two lines — whose continuation is indented but does
+  // not start with `-` (#820). The truncated first line is still a legal
+  // single-line match, so nothing downstream noticed: its unterminated quote
+  // read as a package name, and the repair rewrote the line it had misread, once
+  // per run. The boundary now spans every indented line, so those shapes are
+  // seen whole; a folded entry is unreadable in full and is left alone below.
+  const blockRe = /^minimumReleaseAgeExclude:[ \t]*\r?\n((?:(?:[ \t]+[^\r\n]*|[ \t]*#[^\r\n]*)\r?\n?)*)/m
   const block = blockRe.exec(yaml)
   if (block === null) return []
   const eol = /\r\n/.test(yaml) ? '\r\n' : '\n'
@@ -1431,6 +1437,10 @@ export function mergeDuplicateReleaseAgeExcludes(profile: string, explicitDir?: 
       items.push({ kind: 'comment', line })
       continue
     }
+    // Indented, but not a `-` entry: a folded continuation, most often. It only
+    // reaches this loop because the block boundary now spans such lines (#820),
+    // and it is not something this can read exactly — so the file is left as it
+    // was, the same answer as every other line this cannot re-emit faithfully.
     const m = /^([ \t]+-[ \t]*)(.*?)[ \t]*$/.exec(line)
     if (m === null) return []
     const commentAt = /[ \t]+#/.exec(m[2])

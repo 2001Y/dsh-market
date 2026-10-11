@@ -1238,6 +1238,45 @@ describe('mergeDuplicateReleaseAgeExcludes (#732)', () => {
     expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['pkg'])
     expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe('minimumReleaseAgeExclude:\n  - pkg\n')
   })
+
+  it('leaves a folded entry alone instead of reading its first line as a name (#820)', () => {
+    // pnpm wraps a long `||` union across two lines. The continuation is
+    // indented but does not start with `-`, so the block used to end at it:
+    // only the truncated first line survived, its unterminated quote was read
+    // as a package name, and the repair re-emitted that line with the quote
+    // doubled — once per run, until the file grew large enough to break every
+    // pnpm command in the profile.
+    const original = [
+      'minimumReleaseAgeExclude:',
+      "  - '@scope/thing@1.0.0 || 1.0.1 || 1.0.",
+      "    2 || 1.0.3'",
+      '  - dshmarket@1.66.14',
+      '  - dshmarket@1.66.12 || 1.66.14',
+      '',
+    ].join('\n')
+    const dir = workspace(original)
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual([])
+    expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(original)
+  })
+
+  it('leaves the whole block alone when a folded entry sits between readable ones (#820)', () => {
+    // The readable rules around it are still a duplicate pair, so a repair
+    // that only read up to the continuation would rewrite part of the block
+    // while leaving the entry it misread untouched — worse than not acting.
+    const original = [
+      'minimumReleaseAgeExclude:',
+      '  - dshmarket@1.66.14',
+      "  - '@scope/thing@1.0.0 || 1.0.",
+      "    1 || 1.0.2'",
+      '  - dshmarket@1.66.12',
+      'allowBuilds:',
+      '  esbuild: true',
+      '',
+    ].join('\n')
+    const dir = workspace(original)
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual([])
+    expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(original)
+  })
 })
 
 describe('bundlesDroppedFromProfile (#720)', () => {
