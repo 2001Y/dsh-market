@@ -1355,11 +1355,24 @@ function splitReleaseAgeExclude(entry: string): ReleaseAgeExcludeRule | null {
     text = text.slice(1, -1)
   }
   const at = text.indexOf('@', text.startsWith('@') ? 1 : 0)
-  if (at === -1) return text === '' ? null : { name: text, selector: null }
+  if (at === -1) return isPackageName(text) ? { name: text, selector: null } : null
   const name = text.slice(0, at)
   const selector = text.slice(at + 1).trim()
-  if (name === '' || selector === '') return null
+  if (!isPackageName(name) || selector === '') return null
   return { name, selector }
+}
+
+/**
+ * Whether a name read out of the file is a package name at all.
+ *
+ * The last line of defence (#820): a misread — a folded entry's unterminated
+ * quote read as a name — used to be re-emitted with the quote doubled, and the
+ * repair then ran once per operation, doubling the file each time until every
+ * pnpm command in the profile failed on it. A name that is not a package name
+ * is unreadable input, and unreadable input leaves the file alone.
+ */
+function isPackageName(name: string): boolean {
+  return /^(?:@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9._~-]+$/.test(name)
 }
 
 /**

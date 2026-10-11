@@ -1233,6 +1233,21 @@ describe('mergeDuplicateReleaseAgeExcludes (#732)', () => {
     expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(original)
   })
 
+  it('refuses to rewrite a name that is not a package name (#820)', () => {
+    // The last line of defence: whatever shape misleads the reader, a name
+    // that cannot be a package name must never reach the writer — that is how
+    // a stray quote used to double once per operation until the profile broke.
+    for (const contents of [
+      "minimumReleaseAgeExclude:\n  - '''''': true\n  - a@1.0.0\n",
+      'minimumReleaseAgeExclude:\n  - name with space@1.0.0\n  - a@1.0.0\n  - a@2.0.0\n',
+      'minimumReleaseAgeExclude:\n  - @scope/@1.0.0\n  - a@1.0.0\n  - a@2.0.0\n',
+    ]) {
+      const dir = workspace(contents)
+      expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual([])
+      expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(contents)
+    }
+  })
+
   it('keeps a bare name meaning every version when it is one of the duplicates', () => {
     const dir = workspace('minimumReleaseAgeExclude:\n  - pkg\n  - pkg@1.0.0\n')
     expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['pkg'])
