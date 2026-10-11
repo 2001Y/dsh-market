@@ -16,7 +16,7 @@
  * for the in-tree precedent).
  */
 
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -518,8 +518,44 @@ export function readMarketState(profileDir: string): MarketState {
       ...(brokenPlugins === undefined ? {} : { brokenPlugins }),
       buildEnv: buildEnvFromUnknown(state.buildEnv),
     }
-  } catch {
+  } catch (error) {
+    // An unreadable state file is the profile's whole market state gone: every
+    // disable, group, favourite and exemption in it. Say so — silently coming
+    // back empty reads to the user as "my disabled plugins all switched
+    // themselves on", with nothing anywhere connecting the two (#582's
+    // narrowest surviving point). Writing it back afterwards replaces the
+    // damaged file, so the log is the only trace there will be.
+    if (!(error !== null && typeof error === 'object' && 'code' in error && (error as { code?: unknown }).code === 'ENOENT')) {
+      logEvent('warn', 'state', `market state could not be read (${error instanceof Error ? error.message : String(error)}) — starting from an empty state`)
+    }
     return { disabled: new Set(), groups: {}, groupOrder: [], notes: {}, favorites: [], blocked: [], updateExempt: [] }
+  }
+}
+
+/**
+ * Publish a file so that a reader never sees it half-written.
+ *
+ * The state file carries every choice the user made about their plugins, and
+ * it is written on each switch: a process killed or a disk that fills up
+ * mid-write used to leave truncated JSON behind, which reads as an empty
+ * state — all of it gone, silently. A rename is atomic within one filesystem,
+ * so readers see either the old file or the new one.
+ *
+ * A symlinked state file is followed rather than replaced (#582): the write
+ * lands on the link's target, so a user who keeps their profile state
+ * somewhere else keeps it there.
+ */
+function publishFile(path: string, contents: string): void {
+  const target = (() => {
+    try { return realpathSync(path) } catch { return path }
+  })()
+  const temporary = `${target}.new`
+  writeFileSync(temporary, contents)
+  try {
+    renameSync(temporary, target)
+  } catch (error) {
+    rmSync(temporary, { force: true })
+    throw error
   }
 }
 
@@ -575,7 +611,7 @@ export function writeMarketState(profileDir: string, state: MarketState): void {
   const broken = Object.prototype.hasOwnProperty.call(state, 'brokenPlugins')
     ? state.brokenPlugins
     : onDisk.brokenPlugins
-  writeFileSync(stateFile(profileDir), JSON.stringify({
+  publishFile(stateFile(profileDir), JSON.stringify({
     disabled: [...state.disabled],
     groups: state.groups,
     groupOrder: state.groupOrder,

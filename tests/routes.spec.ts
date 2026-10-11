@@ -15,7 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -23,6 +23,7 @@ import { dump } from 'js-yaml'
 import { mountMarketRoutes, type MarketHost } from '../src/routes.ts'
 import { sameOrigin } from '../src/http.ts'
 import { readMarketState, writeMarketState } from '../src/hot.ts'
+import { configurePersistentLog, readPersistentLog } from '../src/log.ts'
 import * as orderApi from '../src/order.ts'
 import type { PluginCommandRuntime } from '../src/dsh-cli.ts'
 
@@ -1069,5 +1070,46 @@ describe('POST /dsh-market/restore-snapshot & /dsh-market/delete-snapshot', () =
     const res = await hit(routes, '/dsh-market/delete-snapshot', post('/dsh-market/delete-snapshot', { snapshot: 'snapshot-does-not-exist' }))
     expect(res.status).toBe(400)
     expect(String(jsonBody(res).error)).toMatch(/snapshot not found/)
+  })
+})
+
+describe('market state publication (#582 narrowest point)', () => {
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'dshm-state-'))
+    mkdirSync(join(dir, '.dsh-market'), { recursive: true })
+  })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  const statePath = () => join(dir, '.dsh-market', 'state.json')
+
+  it('leaves no half-written file and no temporary behind', () => {
+    writeMarketState(dir, { disabled: new Set(['a']), groups: {}, groupOrder: [] })
+    expect(readMarketState(dir).disabled.has('a')).toBe(true)
+    expect(readdirSync(join(dir, '.dsh-market')).some(name => name.endsWith('.new'))).toBe(false)
+  })
+
+  it('writes through a symlinked state file instead of replacing the link (#582)', () => {
+    const real = join(dir, 'state-elsewhere.json')
+    writeFileSync(real, JSON.stringify({ disabled: ['keep'] }))
+    symlinkSync(real, statePath())
+    writeMarketState(dir, { disabled: new Set(['a', 'keep']), groups: {}, groupOrder: [] })
+    expect(lstatSync(statePath()).isSymbolicLink()).toBe(true)
+    expect(JSON.parse(readFileSync(real, 'utf8')).disabled).toEqual(['a', 'keep'])
+  })
+
+  it('says so when the state file cannot be read, instead of silently coming back empty', () => {
+    // Every disable, group, favourite and exemption lives in this file. Coming
+    // back empty silently reads as "my plugins switched themselves back on".
+    writeFileSync(statePath(), '{"disabled": ["a"')
+    configurePersistentLog(join(dir, 'log.ndjson'))
+    try {
+      expect(readMarketState(dir).disabled.size).toBe(0)
+    } finally { configurePersistentLog(null) }
+    // The log is the only trace: the next write replaces the damaged file.
+    const logged = readPersistentLog(join(dir, 'log.ndjson')).join('\n')
+    expect(logged).toContain('market state could not be read')
+    // A warning, not an info line: it is the only trace this happened.
+    expect(logged).toContain('"level":"warn"')
   })
 })
