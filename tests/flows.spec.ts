@@ -1747,6 +1747,45 @@ describe('install flow', () => {
     expect(hot.mounts).toContain('dsh-loop')
   })
 
+  /** The host's profile watcher, live: what every `dsh web` 0.2 profile runs (#827). */
+  const profileHmr = (): Testbed['loaderEntries'][number] =>
+    ({ options: { id: 'hmr', name: '@deepseek-ai/dsh-hmr' } as never, fiber: {}, update: vi.fn() })
+
+  it('waits for the profile watcher of a plain dsh web and adopts its bundle instead of mounting a second copy (#827)', async () => {
+    // Not a desktop shell: no hostReplayWaitMs. The watcher composes the new
+    // bundle itself once `dsh.profile.bundles` settles; mounting first left
+    // the watcher's row failed on routes the market's copy already held.
+    fake.repos['github:o/dsh-patchy'] = {
+      name: 'dsh-patchy',
+      manifest: { dsh: { bundle: { patch: './cordis.patch.yml' } }, main: 'lib/index.js' },
+      artifacts: ['lib/index.js', 'cordis.patch.yml'],
+    }
+    bed.loaderEntries.push(profileHmr())
+    const replay = setTimeout(() => {
+      bed.loaderEntries.push({ options: { id: 'dsh-patchy', name: 'dsh-patchy' } as never, fiber: {}, update: vi.fn() })
+    }, 600)
+    try {
+      const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-patchy' })
+      expect(r.status).toBe(200)
+      expect(r.json.hot).toBe(true)
+      expect(hot.mounts).not.toContain('dsh-patchy')
+    } finally {
+      clearTimeout(replay)
+    }
+  })
+
+  it('does not wait for the profile watcher on a package it will never replay (#827)', async () => {
+    // Only packages with dsh.bundle enter `dsh.profile.bundles`; a client-only
+    // one has nothing for the watcher to compose, so waiting would only delay it.
+    fake.npm['dsh-loop'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
+    bed.loaderEntries.push(profileHmr())
+    const started = Date.now()
+    const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+    expect(r.status).toBe(200)
+    expect(hot.mounts).toContain('dsh-loop')
+    expect(Date.now() - started).toBeLessThan(2000)
+  })
+
   it('reports restart only when the host replay itself failed (#551)', async () => {
     bed.dispose()
     fake.npm['dsh-loop'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
