@@ -771,6 +771,22 @@ describe('checkUpdates — a floating git install follows the repository\'s vers
     return dir
   }
 
+  /**
+   * Same, but locked through the codeload tarball the `github:` branch reads
+   * `current` from — the shape a real floating `github:owner/repo` install
+   * leaves behind, without which that branch cannot see the lock commit and
+   * the old code also answered false (so the case would prove nothing).
+   */
+  function profileWithCodeload(spec: string, commit: string, version = '2.0.0'): string {
+    const dir = join(mkdtempSync(join(tmpdir(), 'dshm-824-')), 'profiles', 'web')
+    mkdirSync(join(dir, 'node_modules', 'themer'), { recursive: true })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { themer: spec } }))
+    writeFileSync(join(dir, 'node_modules', 'themer', 'package.json'), JSON.stringify({ name: 'themer', version, dsh: { bundle: { patch: './cordis.patch.yml' } } }))
+    writeFileSync(join(dir, 'pnpm-lock.yaml'),
+      `lockfileVersion: 9\n  resolution: {tarball: https://codeload.github.com/owner/themer/tar.gz/${commit}}\n`)
+    return dir
+  }
+
   /** Answers the git advertisement with `head` and raw HEAD package.json with `version` (null = unreachable). */
   function stubGitAndRaw(head: string, version: string | null): { rawHits: () => number } {
     let rawHits = 0
@@ -824,10 +840,25 @@ describe('checkUpdates — a floating git install follows the repository\'s vers
 
   it('applies the same rule to the github: shorthand spelling of a floating install', async () => {
     // #824 also named `github:omdsh-dev/DSH-better-sidebar`: same disease,
-    // different spec spelling. Both spellings must take the same verdict.
+    // different spec spelling. The codeload lock entry makes `current`
+    // readable, so under the OLD rule this row read current OLD ≠ HEAD →
+    // updateAvailable true; only the version rule turns it off.
     stubGitAndRaw(HEAD, '2.0.0')
-    const result = await checkUpdates('web', true, profileWith('github:owner/themer', OLD))
-    expect(result.themer).toMatchObject({ updateAvailable: false })
+    const result = await checkUpdates('web', true, profileWithCodeload('github:owner/themer', OLD))
+    expect(result.themer).toMatchObject({ kind: 'github', current: OLD, latest: HEAD, updateAvailable: false })
+  })
+
+  it('never consults the version of a #semver: range either (#446 shape)', async () => {
+    // `#semver:^2.0.0` re-resolves INSIDE the range: a 3.0.0 at HEAD is not
+    // installable, so the raw version must not even be requested — it would
+    // advertise an update forever. `refOfFragment` skips semver selectors
+    // (the range compares against the default branch), so this needs its own
+    // probe on top of the `#branch` guard.
+    const spec = 'git+https://github.com/zouyuxuan122/dsh-our-free-model.git#semver:^2.0.0'
+    const { rawHits } = stubGitAndRaw(HEAD, '3.0.0')
+    const result = await checkUpdates('web', true, profileWith(spec, OLD))
+    expect(rawHits(), 'a semver range must not trigger a raw version read').toBe(0)
+    expect(result.themer).toMatchObject({ current: OLD, latest: HEAD, updateAvailable: true })
   })
 
   it('falls back to the commit comparison when the raw version cannot be read', async () => {

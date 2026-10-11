@@ -12,7 +12,7 @@ import { marketFetch } from './net.ts'
 import { activeRegion, githubRoutesFor, rememberGithubRoute, throughProxy, type Region } from './regions.ts'
 import { hasDshManifest, profileDir, readGitResolutionCommit, readInstalled, readInstalledVersion, readLockCommits, readProfileBundles } from './profile.ts'
 import { userPatchPackageReferences } from './patch.ts'
-import { catalogRepoKey, gitCommitOfTarget, gitRefOfTarget, gitUploadPackUrl, hostedRepoKey, githubCommitOfTarget, githubRefOfTarget, isGenerationLink, isGitHostedSpec, lookupRepoFromUrl, parseGitHubRemote, repoOfTarget } from './sources.ts'
+import { catalogRepoKey, gitCommitOfTarget, gitRefOfTarget, gitUploadPackUrl, hasSemverSelector, hostedRepoKey, githubCommitOfTarget, githubRefOfTarget, isGenerationLink, isGitHostedSpec, lookupRepoFromUrl, parseGitHubRemote, repoOfTarget } from './sources.ts'
 
 export interface UpdateStatus {
   /**
@@ -434,10 +434,13 @@ async function gitVersionUpdate(
   region: Region,
 ): Promise<boolean | null> {
   if (installedVersion === null) return null
-  // `#branch` and `#semver:` installs chose a line of their own: a new commit
-  // on it is exactly what those users asked to hear about (#446).
+  // `#branch`, `#tag`, and `#semver:` installs chose a line of their own: a
+  // new commit on it is exactly what those users asked to hear about (#446).
+  // `refOfFragment` skips `semver:` ranges (they compare against the default
+  // branch), so they need their own probe — otherwise a range pinned at ^2
+  // with a 3.0.0 at HEAD would advertise an install the range cannot produce.
   const explicitRef = spec.startsWith('github:') ? githubRefOfTarget(spec) : gitRefOfTarget(spec)
-  if (explicitRef !== null) return null
+  if (explicitRef !== null || hasSemverSelector(spec)) return null
   const remoteVersion = await remoteGitVersion(spec, region)
   if (remoteVersion === null) return null
   const compared = compareVersions(remoteVersion, installedVersion)
