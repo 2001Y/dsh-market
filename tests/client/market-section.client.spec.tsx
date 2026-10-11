@@ -7425,6 +7425,9 @@ describe('recently added Discover row (#780)', () => {
     expect([en.recentlyAdded, zh.recentlyAdded]).toEqual(['Recently added', '最近收录'])
     expect([en.sortAdded, en.published]).toEqual(['Date added', 'Date added'])
     expect([zh.sortAdded, zh.published]).toEqual(['收录时间', '收录时间'])
+  })
+})
+
 describe('empty filter recovery', () => {
   it('clears Discover search and category without changing the chosen sort', async () => {
     stubFetch({ '/dsh-market/installed': { profile: 'web', installed: {}, live: [], blocked: ['whale-skin'] } })
