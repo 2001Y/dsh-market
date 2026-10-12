@@ -7,7 +7,7 @@
 
 .root{height:100%;display:flex;flex-direction:column;min-width:0;color:var(--dsw-alias-label-primary,#1f2328);position:relative;container-type:inline-size}
 .head{display:flex;flex-direction:column;gap:12px;padding:4px 4px 6px}
-.title{font-size:16px;line-height:24px;font-weight:500;margin:0}
+.title{font-size:16px;line-height:24px;font-weight:500;margin:0;white-space:nowrap}
 .sub{display:flex;align-items:center;gap:8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#8b93a1);margin:0}
 .submitLink{font-size:11px;line-height:18px;color:var(--dsw-alias-label-tertiary,#8b93a1);text-decoration:none;white-space:nowrap}
 .submitLink:hover{color:var(--dsw-alias-brand-primary,#4f6ef7);text-decoration:underline}
@@ -409,7 +409,12 @@
    leaves room for .footActions on the right of the same line. */
 .footTags{display:flex;flex-wrap:wrap;gap:8px;flex:1 1 0;min-width:0;align-items:center}
 .grow{flex:1}
-.titleRow{display:flex;align-items:center;gap:10px}
+.titleRow{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px}
+/* The update buttons wrap as one group: in a narrow settings panel they
+   drop below the heading together instead of squeezing it into two lines. */
+.titleActions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.titleActions:empty{display:none}
+.titleActions>*{white-space:nowrap;flex-shrink:0}
 /* Sits beside the heading so a screenshot of the page carries the
    version — most reports arrive as a photo of the screen. Selectable
    (not user-select:none) so it can also be copied into an issue. */
