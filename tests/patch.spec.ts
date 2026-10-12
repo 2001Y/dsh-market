@@ -13,7 +13,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { load } from 'js-yaml'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -943,6 +943,55 @@ describe('foreignRowIds', () => {
       writeFileSync(join(pkg, 'own.patch.yml'), '- insert:\n    - id: carrier-main\n      name: dsh-array-carrier\n')
       writeFileSync(join(pkg, 'tweak.patch.yml'), '- id: neighbour-row\n  config:\n    tuned: true\n')
       expect(foreignRowIds(dir, 'dsh-array-carrier')).toEqual(['neighbour-row'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('a patch file that cannot be written is refused in words, not by throwing', () => {
+  // Before this, the write threw: the route answered 500 with a raw errno
+  // ("EACCES: permission denied, open '…'") after the runtime half had already
+  // changed, and the durable layer silently kept the old state.
+  const chmod = (path: string, mode: number): void => { chmodSync(path, mode) }
+
+  it('disableRow, enableRow and removeRowBlocks report a read-only file instead of throwing', async () => {
+    const dir = patchDir()
+    const patch = join(dir, 'cordis.patch.yml')
+    try {
+      writeFileSync(patch, '- id: pet\n  disabled: false\n')
+      chmod(patch, 0o444)
+      const disabled = await disableRow(patch, 'pet')
+      expect(disabled.ok).toBe(false)
+      expect(disabled.reason).toContain('补丁层文件写不进去')
+      expect(disabled.reason).toContain('文件不可写')
+      // An enable only writes when it has a `disabled: true` block to remove;
+      // force-enabling an already-forced row is a no-op success by design.
+      chmod(patch, 0o644)
+      writeFileSync(patch, '- id: pet\n  disabled: true\n')
+      chmod(patch, 0o444)
+      const enabled = await enableRow(patch, 'pet')
+      expect(enabled.ok).toBe(false)
+      expect(enabled.reason).toContain('补丁层文件写不进去')
+      const removed = removeRowBlocks(patch, ['pet'])
+      expect(removed.ok).toBe(false)
+      expect(removed.reason).toContain('补丁层文件写不进去')
+      // Nothing was half-written on the way out.
+      expect(readFileSync(patch, 'utf8')).toBe('- id: pet\n  disabled: true\n')
+    } finally {
+      chmod(patch, 0o644)
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('removeRowBlocks still reports success when there is no file, and when rows are gone', () => {
+    const dir = patchDir()
+    try {
+      const missing = join(dir, 'cordis.patch.yml')
+      expect(removeRowBlocks(missing, ['pet']).ok).toBe(true)
+      writeFileSync(missing, '- id: keep\n  disabled: true\n')
+      expect(removeRowBlocks(missing, ['pet']).ok).toBe(true)
+      expect(readFileSync(missing, 'utf8')).toBe('- id: keep\n  disabled: true\n')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

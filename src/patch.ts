@@ -465,6 +465,30 @@ function lastRowFlag(text: string, rowId: string): 'true' | 'false' | null {
  * `[]` + items mistake, or any broken YAML) must never be made worse —
  * the market reports it and keeps its own live/state.json toggle instead.
  */
+/**
+ * Write the patch file, or say in the user's words why it could not be
+ * written (kettly1260's family of reports, and #582's read-only case): a bare
+ * `EACCES: permission denied, open '…'` reaching the UI tells a user nothing
+ * they can act on, while the plugin's actual state has already changed.
+ */
+function writePatchFile(patchPath: string, contents: string): { ok: boolean; reason: string | null } {
+  try {
+    writeFileSync(patchPath, contents)
+    return { ok: true, reason: null }
+  } catch (error) {
+    const code = error !== null && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code) : ''
+    const detail = code === 'EACCES' || code === 'EPERM' || code === 'EROFS'
+      ? '文件不可写（只读或被系统保护）'
+      : code === 'ENOSPC'
+        ? '磁盘空间不足'
+        : error instanceof Error ? error.message : String(error)
+    return {
+      ok: false,
+      reason: `补丁层文件写不进去：${detail} / the patch file could not be written: ${code === 'EACCES' || code === 'EPERM' || code === 'EROFS' ? 'it is read-only' : detail}`,
+    }
+  }
+}
+
 function appendPatchEntry(patchPath: string, block: string): { ok: boolean; reason: string | null } {
   let text = ''
   try {
@@ -472,8 +496,7 @@ function appendPatchEntry(patchPath: string, block: string): { ok: boolean; reas
   } catch { /* created below */ }
   const core = text.trim()
   if (core === '') {
-    writeFileSync(patchPath, block)
-    return { ok: true, reason: null }
+    return writePatchFile(patchPath, block)
   }
   // The dsh profile template ships an empty `[]` placeholder (a valid
   // empty list). Appending after it would create TWO top-level elements in
@@ -483,14 +506,12 @@ function appendPatchEntry(patchPath: string, block: string): { ok: boolean; reas
   // Comments only (the user dropped the placeholder): append after them.
   if (withoutComments === '') {
     const next = text.endsWith('\n') ? text : `${text}\n`
-    writeFileSync(patchPath, `${next}${block}`)
-    return { ok: true, reason: null }
+    return writePatchFile(patchPath, `${next}${block}`)
   }
   if (withoutComments === '[]' || withoutComments === '[ ]') {
     const commented = text.replace(/^[ \t]*\[[ \t]*\][ \t]*(?:#.*)?(?:\r?\n|$)/mu, '# []\n')
     const next = commented.endsWith('\n') ? commented : `${commented}\n`
-    writeFileSync(patchPath, `${next}${block}`)
-    return { ok: true, reason: null }
+    return writePatchFile(patchPath, `${next}${block}`)
   }
   // A top-level flow LIST (other than the placeholder above) cannot be
   // appended to: `- id: X` after `[1, 2]` would create two top-level
@@ -515,8 +536,7 @@ function appendPatchEntry(patchPath: string, block: string): { ok: boolean; reas
     }
   }
   const next = text.endsWith('\n') ? text : `${text}\n`
-  writeFileSync(patchPath, `${next}${block}`)
-  return { ok: true, reason: null }
+  return writePatchFile(patchPath, `${next}${block}`)
 }
 
 /**
@@ -545,7 +565,8 @@ export function disableRow(patchPath: string, rowId: string): Promise<{ ok: bool
         const flipped = rowBlock(rowId, true)
         return block.includes('\r\n') ? flipped.replace(/\n/gu, '\r\n') : flipped
       })
-      writeFileSync(patchPath, next)
+      const flipped = writePatchFile(patchPath, next)
+      if (!flipped.ok) return flipped
       // A longer entry for the row further down still has the last word.
       if (lastRowFlag(next, rowId) !== 'true') {
         const result = appendPatchEntry(patchPath, rowBlock(rowId, true))
@@ -575,7 +596,8 @@ export function enableRow(patchPath: string, rowId: string): Promise<{ ok: boole
     })()
     const next = text.replace(rowBlocksRe(rowId, 'true'), '')
     if (next !== text) {
-      writeFileSync(patchPath, withPlaceholderRestored(next))
+      const written = writePatchFile(patchPath, withPlaceholderRestored(next))
+      if (!written.ok) return written
       logEvent('info', 'patch', `enabled row ${rowId} in ${patchPath}`)
       return { ok: true, reason: null }
     }
@@ -605,15 +627,15 @@ function withPlaceholderRestored(text: string): string {
 
 /** Remove every disable/force block the market (or the user) wrote for a
  * row — the uninstall cleanup, so a removed plugin leaves no orphan rows. */
-export function removeRowBlocks(patchPath: string, rowIds: readonly string[]): void {
+export function removeRowBlocks(patchPath: string, rowIds: readonly string[]): { ok: boolean; reason: string | null } {
   let text = ''
   try {
     text = readFileSync(patchPath, 'utf8')
-  } catch { return }
+  } catch { return { ok: true, reason: null } } // no file, nothing to remove
   let next = text
   for (const rowId of rowIds) next = next.replace(rowBlocksRe(rowId, 'any'), '')
-  if (next !== text) {
-    writeFileSync(patchPath, withPlaceholderRestored(next))
-    logEvent('info', 'patch', `removed patch rows for ${rowIds.join(', ')}`)
-  }
+  if (next === text) return { ok: true, reason: null }
+  const written = writePatchFile(patchPath, withPlaceholderRestored(next))
+  if (written.ok) logEvent('info', 'patch', `removed patch rows for ${rowIds.join(', ')}`)
+  return written
 }

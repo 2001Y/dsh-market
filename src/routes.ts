@@ -994,7 +994,8 @@ export function mountMarketRoutes(
             } else if (prePatch === null || !prePatch.forced.includes(rowId)) {
               // A row already forced on before this call got nothing from
               // the enable; that block is the user's to keep.
-              removeRowBlocks(userPatchPath, [rowId])
+              const cleanedRow = removeRowBlocks(userPatchPath, [rowId])
+              if (!cleanedRow.ok) logEvent('warn', 'toggle', `patch row could not be cleared — ${cleanedRow.reason}`)
             }
           }
           if (stackChanged) {
@@ -1570,7 +1571,8 @@ export function mountMarketRoutes(
     if (native) {
       logEvent('info', 'uninstall', `${name} ships or depends on a native addon; a restart is needed before it can be installed again`)
     }
-    removeRowBlocks(userPatchPath, ownedRows)
+    const cleanedOwned = removeRowBlocks(userPatchPath, ownedRows)
+    if (!cleanedOwned.ok) logEvent('warn', 'uninstall', `patch rows could not be cleared — ${cleanedOwned.reason}`)
     disabled.delete(name)
     replacedWhileLive.delete(name)
     removeFromGroups({ groups, groupOrder }, name)
@@ -3895,7 +3897,8 @@ sendJson(response, 200, { updates })
               logEvent('warn', 'source-migration', `${name}: ${stateWarning}`)
             }
 
-            removeRowBlocks(userPatchPath, oldRows)
+            const cleanedOld = removeRowBlocks(userPatchPath, oldRows)
+            if (!cleanedOld.ok) logEvent('warn', 'install', `patch rows could not be cleared — ${cleanedOld.reason}`)
             const patchDisabled = wasDisabled || patchFlags.disabled.includes(name)
             const patchForced = !patchDisabled && patchFlags.forced.includes(name)
             const patchWarnings: string[] = []
@@ -5267,7 +5270,8 @@ sendJson(response, 200, { updates })
               for (const name of disabled) {
                 const ids = rowIdsForPackage(host, activeProfileDir, name)
                 if (ids.length > 0) {
-                  removeRowBlocks(userPatchPath, ids)
+                  const cleanedIds = removeRowBlocks(userPatchPath, ids)
+                  if (!cleanedIds.ok) logEvent('warn', 'patch', `patch rows could not be cleared — ${cleanedIds.reason}`)
                   restored.push(name)
                 }
               }
@@ -5722,7 +5726,8 @@ sendJson(response, 200, { updates })
               // Patch-layer rows must not survive the remove either: a
               // `- id: X` + `disabled: true` row for a package that no longer
               // mounts is a boot-time orphan (port of dsh-plugin-hub).
-              removeRowBlocks(userPatchPath, ownedRows)
+              const cleanedOwned = removeRowBlocks(userPatchPath, ownedRows)
+              if (!cleanedOwned.ok) logEvent('warn', 'uninstall', `patch rows could not be cleared — ${cleanedOwned.reason}`)
               // The disable list must not keep a removed plugin: a later
               // reinstall starts enabled. Group memberships follow the same
               // rule so no group toggle ever targets a ghost member.
