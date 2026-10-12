@@ -4,7 +4,8 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { load } from 'js-yaml'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { resolveDshHome } from '../src/home-paths.ts'
@@ -1108,6 +1109,179 @@ describe('mergeDuplicateReleaseAgeExcludes (#732)', () => {
     return dir
   }
 
+  it.each(['\n', '\r\n'])('merges a pnpm folded union and shadowed duplicates with %j (#820)', (eol) => {
+    const dir = workspace([
+      'packages:',
+      '  - .',
+      'minimumReleaseAgeExclude:',
+      "  - '@scope/a@1.0.0 || 1.0.1 ||",
+      "    1.0.2'",
+      '  - dshmarket@1.66.14',
+      '  - dshmarket@1.66.15',
+      'allowBuilds:',
+      '  esbuild: true',
+      '',
+    ].join(eol))
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['dshmarket'])
+    expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe([
+      'packages:',
+      '  - .',
+      'minimumReleaseAgeExclude:',
+      "  - '@scope/a@1.0.0 || 1.0.1 ||",
+      "    1.0.2'",
+      '  - dshmarket@1.66.14 || 1.66.15',
+      'allowBuilds:',
+      '  esbuild: true',
+      '',
+    ].join(eol))
+  })
+
+  it.each([
+    ["'", '@scope/pkg'],
+    ["'", 'ordinary'],
+    ['"', '@scope/pkg'],
+    ['"', 'ordinary'],
+    ['', 'ordinary'],
+  ])('merges a folded %s scalar for %s without widening its versions (#820)', (quote, name) => {
+    const dir = workspace([
+      'minimumReleaseAgeExclude:',
+      `  - ${quote}${name}@1.0.0 ||`,
+      `    1.0.1${quote}`,
+      `  - '${name}@1.0.2-beta.1+build.2'`,
+      '',
+    ].join('\n'))
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual([name])
+    const parsed = load(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8'))
+    expect(parsed).toEqual({ minimumReleaseAgeExclude: [`${name}@1.0.0 || 1.0.1 || 1.0.2-beta.1+build.2`] })
+  })
+
+  it('decodes YAML escapes before grouping and re-emits the same rule (#820)', () => {
+    const dir = workspace('minimumReleaseAgeExclude:\n  - "pkg\\u00401.0.0 ||\n    1.0.1"\n  - pkg@1.0.2\n')
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['pkg'])
+    expect(load(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')))
+      .toEqual({ minimumReleaseAgeExclude: ['pkg@1.0.0 || 1.0.1 || 1.0.2'] })
+  })
+
+  it('honours an escaped line break in a double-quoted scalar (#820)', () => {
+    const dir = workspace('minimumReleaseAgeExclude:\n  - "pkg@1.0.\\\n    1"\n  - pkg@1.0.2\n')
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['pkg'])
+    expect(load(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')))
+      .toEqual({ minimumReleaseAgeExclude: ['pkg@1.0.1 || 1.0.2'] })
+  })
+
+  it.each(['\n', '\r\n'])('preserves full-line and trailing comments around folded entries with %j (#816, #820)', (eol) => {
+    const dir = workspace([
+      'minimumReleaseAgeExclude:',
+      '# before',
+      "  - '@scope/pkg@1.0.0 ||",
+      "    1.0.1'  # first",
+      '',
+      '  # between',
+      "  - '@scope/pkg@1.0.2 ||",
+      "    1.0.3' # duplicate",
+      '  - other@1.0.0   # untouched',
+      'allowBuilds:',
+      '  esbuild: true # unrelated',
+      '',
+    ].join(eol))
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['@scope/pkg'])
+    expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe([
+      'minimumReleaseAgeExclude:',
+      '# before',
+      "  - '@scope/pkg@1.0.0 || 1.0.1 || 1.0.2 || 1.0.3' # first",
+      '',
+      '  # between',
+      '  # duplicate',
+      '  - other@1.0.0   # untouched',
+      'allowBuilds:',
+      '  esbuild: true # unrelated',
+      '',
+    ].join(eol))
+  })
+
+  it('converges for a long two-line rule over 20 consecutive runs (#820)', () => {
+    const versions = Array.from({ length: 10 }, (_, i) => `1.0.${i}`)
+    const original = [
+      'minimumReleaseAgeExclude:',
+      `  - '@scope/pkg@${versions.slice(0, 6).join(' || ')} ||`,
+      `    ${versions.slice(6).join(' || ')}'`,
+      "  - '@scope/pkg@1.0.10'",
+      'allowBuilds:',
+      '  esbuild: true',
+      '',
+    ].join('\n')
+    const dir = workspace(original)
+    const file = join(dir, 'pnpm-workspace.yaml')
+    const expected = { minimumReleaseAgeExclude: [`@scope/pkg@${[...versions, '1.0.10'].join(' || ')}`], allowBuilds: { esbuild: true } }
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['@scope/pkg'])
+    const repaired = readFileSync(file)
+    expect(load(repaired.toString())).toEqual(expected)
+    utimesSync(file, 1, 1)
+    const mtime = statSync(file).mtimeMs
+    for (let i = 1; i < 20; i++) {
+      expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual([])
+      expect(readFileSync(file)).toEqual(repaired)
+      expect(statSync(file).mtimeMs).toBe(mtime)
+    }
+  })
+
+  it.each([
+    "  - '@scope/pkg@1.0.0 ||\n    1.0.1'",
+    '  - "pkg@1.0.0 ||\n    1.0.1"',
+    '  - pkg@1.0.0 ||\n    1.0.1',
+  ])('does not write a folded block that needs no merge: %s (#820)', (entry) => {
+    const original = `minimumReleaseAgeExclude:\r\n${entry.replaceAll('\n', '\r\n')}  # keep\r\n\r\nallowBuilds:\r\n  esbuild: true`
+    const dir = workspace(original)
+    const file = join(dir, 'pnpm-workspace.yaml')
+    utimesSync(file, 1, 1)
+    const mtime = statSync(file).mtimeMs
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual([])
+    expect(readFileSync(file, 'utf8')).toBe(original)
+    expect(statSync(file).mtimeMs).toBe(mtime)
+  })
+
+  it.each([
+    "  - '@scope/pkg@1.0.0 ||\n    1.0.1", // unterminated
+    "  - '@scope/pkg@1.0.0 ||\n    1.0.1\"", // mismatched quotes
+    "  - 'pkg@1.0.0'junk", // content after closing quote
+    "  - 'pkg@1.0.0''", // unmatched escaped quote
+    "  - 'pkg@1.0.0''suffix'", // decoded quote is not a version
+    '  - "pkg@1.0.0\\q"', // invalid YAML escape
+    "  - '''@scope/pkg@1.0.0 ||'\n    1.0.1'", // already damaged file
+    "  - '@scope/pkg@1.0.\n    1'", // a newline inside a version is a space, not concatenation
+    "  - ' pkg@1.0.0'", // quoted whitespace must not be stripped
+    "  - 'pkg@1.0.0 # literal'", // not a YAML comment
+    '  - pkg@1.0.0 # ends the scalar\n    || 1.0.1',
+    '  - pkg@1.0.0\n\n    || 1.0.1', // a blank line must not truncate validation
+    '  - pkg@1.0.0\n  # interrupts\n    || 1.0.1',
+    '  - pkg@1.0.0\n  orphan@1.0.1', // insufficient continuation indent
+    '  - pkg@1.0.0\n\t|| 1.0.1',
+    '  - pkg@1.0.0\n    nested: true',
+    '  - &rule pkg@1.0.0',
+    '  - *rule',
+    '  - !!str pkg@1.0.0',
+    '  - >\n    pkg@1.0.0',
+    '  - |\n    pkg@1.0.0',
+    '  - [pkg@1.0.0]',
+    '  - {pkg: 1.0.0}',
+    "  - 'pkg@*'", // complex selectors are left alone, never widened
+    "  - 'pkg@>=1.0.0'",
+    "  - 'pkg@1.0.0-.'",
+    "  - 'pkg@1.0.0-01'",
+    "  - 'pkg@01.0.0'",
+  ])('refuses unsafe or unsupported input without a write over 20 runs: %s (#820)', (entry) => {
+    const original = `minimumReleaseAgeExclude:\n  - a@1.0.0\n  - a@2.0.0\n${entry}\nallowBuilds:\n  esbuild: true\n`
+    const dir = workspace(original)
+    const file = join(dir, 'pnpm-workspace.yaml')
+    utimesSync(file, 1, 1)
+    const mtime = statSync(file).mtimeMs
+    for (let i = 0; i < 20; i++) {
+      expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual([])
+      expect(readFileSync(file, 'utf8')).toBe(original)
+      expect(statSync(file).mtimeMs).toBe(mtime)
+    }
+  })
+
   it('merges a shadowed duplicate rule into one union (#732)', () => {
     // pnpm appended the second rule when it let 1.65.4 through, then honoured
     // only the first per name — so its own entry was shadowed and every later
@@ -1158,6 +1332,13 @@ describe('mergeDuplicateReleaseAgeExcludes (#732)', () => {
     expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['@scope/pkg'])
     expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8'))
       .toBe("minimumReleaseAgeExclude:\n  - '@scope/pkg@1.0.0'\n")
+  })
+
+  it('retains the repair of a single unquoted scoped name (#732)', () => {
+    const dir = workspace('minimumReleaseAgeExclude:\n  - @scope/pkg@1.0.0 # keep\n')
+    expect(mergeDuplicateReleaseAgeExcludes('web')).toEqual(['@scope/pkg'])
+    expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8'))
+      .toBe("minimumReleaseAgeExclude:\n  - '@scope/pkg@1.0.0' # keep\n")
   })
 
   it('does not touch a block it cannot read exactly', () => {
@@ -1254,13 +1435,14 @@ describe('mergeDuplicateReleaseAgeExcludes (#732)', () => {
     expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe('minimumReleaseAgeExclude:\n  - pkg\n')
   })
 
-  it('leaves a folded entry alone instead of reading its first line as a name (#820)', () => {
+  it('leaves a line break inside a version alone instead of guessing its meaning (#820)', () => {
     // pnpm wraps a long `||` union across two lines. The continuation is
     // indented but does not start with `-`, so the block used to end at it:
     // only the truncated first line survived, its unterminated quote was read
     // as a package name, and the repair re-emitted that line with the quote
     // doubled — once per run, until the file grew large enough to break every
-    // pnpm command in the profile.
+    // pnpm command in the profile. YAML folds `1.0.` + `2` to `1.0. 2`, which
+    // is not an exact version: even with scalar decoding this stays unreadable.
     const original = [
       'minimumReleaseAgeExclude:',
       "  - '@scope/thing@1.0.0 || 1.0.1 || 1.0.",
@@ -1274,7 +1456,7 @@ describe('mergeDuplicateReleaseAgeExcludes (#732)', () => {
     expect(readFileSync(join(dir, 'pnpm-workspace.yaml'), 'utf8')).toBe(original)
   })
 
-  it('leaves the whole block alone when a folded entry sits between readable ones (#820)', () => {
+  it('leaves the whole block alone when folding splits a version between readable rules (#820)', () => {
     // The readable rules around it are still a duplicate pair, so a repair
     // that only read up to the continuation would rewrite part of the block
     // while leaving the entry it misread untouched — worse than not acting.

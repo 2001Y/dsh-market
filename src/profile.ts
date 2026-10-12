@@ -7,6 +7,7 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
+import { JSON_SCHEMA, load } from 'js-yaml'
 import { resolveDshHome } from './home-paths.ts'
 import { githubRemoteIdentities, githubRepoIdentities, isGitHostedSpec, repoOfTarget } from './sources.ts'
 
@@ -1349,16 +1350,19 @@ interface ReleaseAgeExcludeRule {
  * leaves the file alone rather than rewriting a line it misread.
  */
 function splitReleaseAgeExclude(entry: string): ReleaseAgeExcludeRule | null {
-  let text = entry.trim()
-  if (text.length >= 2
-    && (text[0] === "'" && text[text.length - 1] === "'" || text[0] === '"' && text[text.length - 1] === '"')) {
-    text = text.slice(1, -1)
-  }
+  // The caller decodes the complete YAML scalar first. Stripping quotes or
+  // whitespace here would reinterpret malformed input as a different rule.
+  const text = entry
   const at = text.indexOf('@', text.startsWith('@') ? 1 : 0)
   if (at === -1) return isPackageName(text) ? { name: text, selector: null } : null
   const name = text.slice(0, at)
-  const selector = text.slice(at + 1).trim()
-  if (!isPackageName(name) || selector === '') return null
+  const selector = text.slice(at + 1)
+  // Only exact versions and their unions can be merged without interpreting
+  // ranges, escapes or a line break inside a version as a wider exemption.
+  const number = '(?:0|[1-9][0-9]*)'
+  const prerelease = `(?:${number}|[0-9]*[A-Za-z-][0-9A-Za-z-]*)`
+  const version = `${number}\\.${number}\\.${number}(?:-${prerelease}(?:\\.${prerelease})*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?`
+  if (!isPackageName(name) || !new RegExp(`^${version}(?:[ \\t]*\\|\\|[ \\t]*${version})*$`).test(selector)) return null
   return { name, selector }
 }
 
@@ -1427,8 +1431,9 @@ export function mergeDuplicateReleaseAgeExcludes(profile: string, explicitDir?: 
   // single-line match, so nothing downstream noticed: its unterminated quote
   // read as a package name, and the repair rewrote the line it had misread, once
   // per run. The boundary now spans every indented line, so those shapes are
-  // seen whole; a folded entry is unreadable in full and is left alone below.
-  const blockRe = /^minimumReleaseAgeExclude:[ \t]*\r?\n((?:(?:[ \t]+[^\r\n]*|[ \t]*#[^\r\n]*)\r?\n?)*)/m
+  // seen whole. Blank lines must not truncate a block either: otherwise an
+  // unreadable continuation below one could escape validation before a write.
+  const blockRe = /^minimumReleaseAgeExclude:[ \t]*\r?\n((?:(?:[ \t]+[^\r\n]*|[ \t]*#[^\r\n]*)\r?\n?|\r?\n)*)/m
   const block = blockRe.exec(yaml)
   if (block === null) return []
   const eol = /\r\n/.test(yaml) ? '\r\n' : '\n'
@@ -1442,49 +1447,61 @@ export function mergeDuplicateReleaseAgeExcludes(profile: string, explicitDir?: 
    */
   type Item =
     | { kind: 'comment'; line: string }
-    | { kind: 'entry'; rule: ReleaseAgeExcludeRule; quoted: boolean; bare: string; comment: string | null }
+    | { kind: 'entry'; rule: ReleaseAgeExcludeRule; quoted: boolean; original: string; comment: string | null }
   const items: Item[] = []
-  for (const line of block[1].split(/\r?\n/)) {
-    if (line.trim() === '') continue
-    if (/^[ \t]*#/.test(line)) {
+  const physical = block[1].split(/\r?\n/)
+  if (physical[physical.length - 1] === '') physical.pop()
+  for (let i = 0; i < physical.length; i++) {
+    const line = physical[i]
+    if (line.trim() === '' || /^[ \t]*#/.test(line)) {
       items.push({ kind: 'comment', line })
       continue
     }
-    // Indented, but not a `-` entry: a folded continuation, most often. It only
-    // reaches this loop because the block boundary now spans such lines (#820),
-    // and it is not something this can read exactly — so the file is left as it
-    // was, the same answer as every other line this cannot re-emit faithfully.
-    const m = /^([ \t]+-[ \t]*)(.*?)[ \t]*$/.exec(line)
-    if (m === null) return []
-    const commentAt = /[ \t]+#/.exec(m[2])
-    const value = commentAt === null ? m[2] : m[2].slice(0, commentAt.index)
-    const comment = commentAt === null ? null : m[2].slice(commentAt.index).trim()
-    if (value.includes('#')) return []
+    const m = /^([ ]+)-[ ]+(\S.*)$/.exec(line)
+    if (m === null || m[1] !== indent || !/^[A-Za-z0-9._~@'"-]/.test(m[2])) return []
+    const raw = [line]
+    // Only uninterrupted, more-indented continuation lines are supported.
+    // The YAML parser, rather than a string join, determines folding/escapes.
+    while (i + 1 < physical.length) {
+      const next = physical[i + 1]
+      if (next.trim() === '' || /^[ \t]*#/.test(next)) break
+      const spaces = /^ +/.exec(next)?.[0].length ?? 0
+      if (spaces <= indent.length) break
+      raw.push(next)
+      i++
+    }
+    let value: unknown
+    try {
+      // Keep the pre-existing repair of single-line, unquoted scoped names
+      // (#732). YAML itself forbids a plain scalar starting with `@`.
+      value = m[2].startsWith('@') && raw.length === 1
+        ? m[2].replace(/[ \t]+#.*$/, '').trimEnd()
+        : load(raw.join('\n'), { schema: JSON_SCHEMA })
+      if (Array.isArray(value) && value.length === 1) value = value[0]
+    } catch { return [] }
+    if (typeof value !== 'string') return []
     const rule = splitReleaseAgeExclude(value)
     if (rule === null) return []
-    items.push({ kind: 'entry', rule, quoted: /^['"]/.test(value), bare: `${m[1]}${value}`, comment })
+    const comment = /[ \t]+(#[^\r\n]*)$/.exec(raw[raw.length - 1])?.[1] ?? null
+    items.push({ kind: 'entry', rule, quoted: /^['"]/.test(m[2]), original: raw.join(eol), comment })
   }
-  const entries = items.flatMap(item => item.kind === 'entry' ? [{ ...item, line: item.bare }] : [])
+  const entries = items.flatMap(item => item.kind === 'entry' ? [item] : [])
   const byName = new Map<string, {
     selectors: Set<string>
-    originals: string[]
-    lines: string[]
     allVersions: boolean
     quoted: boolean
     count: number
   }>()
   const order: string[] = []
-  for (const { rule, quoted, line } of entries) {
+  for (const { rule, quoted } of entries) {
     let group = byName.get(rule.name)
     if (group === undefined) {
-      group = { selectors: new Set(), originals: [], lines: [], allVersions: false, quoted: false, count: 0 }
+      group = { selectors: new Set(), allVersions: false, quoted: false, count: 0 }
       byName.set(rule.name, group)
       order.push(rule.name)
     }
     group.count += 1
     group.quoted = group.quoted || quoted
-    group.originals.push(rule.selector ?? '')
-    group.lines.push(line)
     if (rule.selector === null) group.allVersions = true
     else group.selectors.add(rule.selector)
   }
@@ -1497,11 +1514,7 @@ export function mergeDuplicateReleaseAgeExcludes(profile: string, explicitDir?: 
     // Several rules for one name are the #732 breakage — only the first is
     // ever read — so they become one, as the union of the versions the file
     // already lists.
-    const text = group.allVersions
-      ? name
-      : group.count === 1
-        ? `${name}@${group.originals[0] ?? ''}`
-        : `${name}@${[...group.selectors].join(' || ')}`
+    const text = group.allVersions ? name : `${name}@${[...group.selectors].join(' || ')}`
     // `@` cannot start a plain scalar in YAML, so a scoped name is written
     // quoted — the way pnpm itself writes one.
     const quoted = group.quoted || text.startsWith('@')
@@ -1510,7 +1523,7 @@ export function mergeDuplicateReleaseAgeExcludes(profile: string, explicitDir?: 
   const rewritten = order.filter(name => {
     const group = byName.get(name)
     if (group === undefined) return false
-    return group.count > 1 || group.lines[0] !== produced(name)
+    return group.count > 1 || name.startsWith('@') && !group.quoted
   })
   if (rewritten.length === 0) return []
   // Each package's one line goes where its FIRST rule was. A later duplicate
@@ -1518,6 +1531,9 @@ export function mergeDuplicateReleaseAgeExcludes(profile: string, explicitDir?: 
   const written = new Set<string>()
   const lines = items.flatMap(item => {
     if (item.kind === 'comment') return [item.line]
+    // A valid single rule needs no repair, even when its scalar was folded or
+    // used double quotes. Keep it verbatim when repairing another package.
+    if (!rewritten.includes(item.rule.name)) return [item.original]
     const suffix = item.comment === null ? '' : ` ${item.comment}`
     if (written.has(item.rule.name)) return item.comment === null ? [] : [`${indent}${item.comment}`]
     written.add(item.rule.name)
