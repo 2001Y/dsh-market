@@ -203,6 +203,10 @@ export interface UpdateStatus {
   latest?: string | null
   /** A plain dependency, not a plugin (#793): a newer release may exist but is never offered. */
   notAPlugin?: boolean
+  /** Floating git install whose line moved without a release (#824): the
+      unreleased HEAD, shown as a neutral badge — newer commits exist, but the
+      market installs versions, not branch heads. */
+  unreleasedCommit?: string
   /** Updating this local package switches it to its matched online release. */
   restoreRequired?: boolean
   /** Explicit source migration; never part of update-all. */
