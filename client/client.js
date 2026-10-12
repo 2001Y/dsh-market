@@ -383,6 +383,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			updateNow: "立即更新",
 			updateFail: "更新失败",
 			upToDate: "已是最新",
+			unreleasedCommits: "有新提交（未发版）{0}",
+			unreleasedCommitsHint: "所选分支上有比你已装版本更新的提交，但没有发布新版本号；市场只安装正式版本，不会自动装这些提交。",
 			linkedDev: "本地开发",
 			hostUpdateReady: "有新版本 {0}",
 			hostUpdateHint: "本市场由桌面端安装和更新，新版本请在桌面端更新",
@@ -1086,6 +1088,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			updateNow: "Update now",
 			updateFail: "Update failed",
 			upToDate: "Up to date",
+			unreleasedCommits: "New commits (unreleased) {0}",
+			unreleasedCommitsHint: "The selected branch has commits newer than your install, but no new version was published; the market installs releases only and will not apply them automatically.",
 			linkedDev: "local",
 			hostUpdateReady: "New version {0}",
 			hostUpdateHint: "Installed and updated by the desktop app; update it there.",
@@ -13463,7 +13467,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 																else doUpdate(name);
 															},
 															children: status.restoreRequired === true ? t("restoreOnline") : t("update")
-														}) : localDev ? null : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+														}) : localDev ? null : status?.unreleasedCommit != null ? /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
+															className: Market_module_css_default.metaTag,
+															title: t("unreleasedCommitsHint"),
+															children: t("unreleasedCommits").replace("{0}", displayLatest(status.unreleasedCommit))
+														}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("span", {
 															className: Market_module_css_default.metaTag,
 															title: t("upToDate"),
 															children: t("upToDate")

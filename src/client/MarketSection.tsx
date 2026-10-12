@@ -6983,7 +6983,9 @@ export function MarketSection(props: MarketSectionProps) {
                                           )
                                         : localDev
                                           ? null
-                                          : <span className={css.metaTag} title={t('upToDate')}>{t('upToDate')}</span>}
+                                          : status?.unreleasedCommit != null
+                                            ? <span className={css.metaTag} title={t('unreleasedCommitsHint')}>{t('unreleasedCommits').replace('{0}', displayLatest(status.unreleasedCommit))}</span>
+                                            : <span className={css.metaTag} title={t('upToDate')}>{t('upToDate')}</span>}
                                 {removingName === name && <span className={css.metaTag}>{t('uninstalling')}</span>}
                                 </span>
                                 </div>

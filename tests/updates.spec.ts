@@ -820,6 +820,9 @@ describe('checkUpdates — a floating git install follows the repository\'s vers
     stubGitAndRaw(HEAD, '2.0.0')
     const result = await checkUpdates('web', true, profileWith(spec, OLD))
     expect(result.themer).toMatchObject({ kind: 'github', version: '2.0.0', current: OLD, latest: HEAD, updateAvailable: false })
+    // Not an update, but not "up to date" either: the badge names the
+    // unreleased HEAD so a user who wants those commits knows the row lags.
+    expect(result.themer.unreleasedCommit).toBe(HEAD)
   })
 
   it('still advertises the update when the repository published a newer version', async () => {
@@ -827,6 +830,9 @@ describe('checkUpdates — a floating git install follows the repository\'s vers
     stubGitAndRaw(HEAD, '2.1.0')
     const result = await checkUpdates('web', true, profileWith(spec, OLD))
     expect(result.themer).toMatchObject({ current: OLD, latest: HEAD, updateAvailable: true })
+    // A real release is an update; the unreleased-commits badge must not say
+    // anything beside it.
+    expect(result.themer.unreleasedCommit).toBeUndefined()
   })
 
   it('does not offer a downgrade when the remote version reads older than the install', async () => {

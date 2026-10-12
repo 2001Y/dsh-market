@@ -32,6 +32,18 @@ export interface UpdateStatus {
    */
   updateAvailable: boolean
   /**
+   * HEAD of the chosen line for a floating git install whose repository has
+   * moved without publishing: newer commits exist (current ≠ latest) but the
+   * version did not advance, so #824's rule answers `updateAvailable: false`
+   * — the update channel installs releases, not arbitrary branch heads.
+   *
+   * This field keeps the fact visible instead of collapsing it into "up to
+   * date": the market shows "有新提交（未发版）<short sha>" so a user who
+   * DOES want the unreleased bits knows a rebuild-installed row is behind,
+   * while everyone else is not nagged by a permanent update button.
+   */
+  unreleasedCommit?: string
+  /**
    * This package is a plain dependency, not a plugin: no `dsh` field, not in
    * `dsh.profile.bundles`, and no row of the user's own patch loads it
    * (#793). A newer release can exist and is reported as `latest`, but it is
@@ -563,6 +575,8 @@ export async function checkUpdates(
         result[name] = {
           kind: 'github', version, current, latest,
           updateAvailable: byVersion ?? (current !== null && latest !== null && current !== latest),
+          ...(byVersion === false && current !== null && latest !== null && current !== latest
+            ? { unreleasedCommit: latest } : {}),
         }
       } else if (isGitHostedSpec(spec)) {
         // Private / self-hosted git (Gitea, GitLab, raw git+https). Never ask
@@ -587,6 +601,8 @@ export async function checkUpdates(
         result[name] = {
           kind: 'github', version, current, latest,
           updateAvailable: byVersion ?? (current !== null && latest !== null && current !== latest),
+          ...(byVersion === false && current !== null && latest !== null && current !== latest
+            ? { unreleasedCommit: latest } : {}),
         }
       } else {
         // A URL install (release archive, self-hosted tarball) has no
