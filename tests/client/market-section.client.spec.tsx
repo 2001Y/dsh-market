@@ -430,6 +430,21 @@ describe('MarketSection (jsdom)', () => {
     }
   })
 
+  it('shows why an export failed instead of only the status code (#55)', async () => {
+    // kettly1260 saw "Error: HTTP 500" and could not tell what to do. The route
+    // had answered with the reason; the download dropped it.
+    stubFetch({
+      '/dsh-market/backup': { __status: 500, error: '这个 profile 的配置文件超过 256 个，整份备份放不下。可以只导出选中的插件。' },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getByRole('button', { name: en.tabAdvanced }))
+    fireEvent.click(await screen.findByRole('button', { name: en.backupDownload }))
+    const banner = await screen.findByText(/配置文件超过 256 个/)
+    expect(banner.textContent).toContain(en.backupExportFailed)
+    expect(screen.queryByText(/HTTP 500/)).toBeNull()
+  })
+
   it('groups Backup & Restore and Diagnostics under an Advanced tab, not as top-level peers', async () => {
     render(<MarketSection {...props()} />)
     await screen.findByText('dsh-loop')

@@ -2298,7 +2298,12 @@ export function mountMarketRoutes(
           })
           response.end(backup)
         } catch (error) {
-          sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
+          // Logged as well as returned: the client shows the reason inline,
+          // and the log export is what a report can carry (kettly1260 on #55
+          // saw only "HTTP 500" because the message was thrown away here).
+          const reason = error instanceof Error ? error.message : String(error)
+          logEvent('error', 'backup', `export failed — ${reason}`)
+          sendJson(response, 500, { error: reason })
         }
       },
     }),

@@ -98,6 +98,8 @@ interface RequestOpts {
   body?: unknown
   /** Verbatim body bytes (malformed JSON / empty stream cases). */
   rawBody?: string
+  /** Peer address the download/restart fences read; loopback unless a test says otherwise. */
+  remoteAddress?: string
 }
 
 /** A fake IncomingMessage: headers + an async-iterable body (readJsonBody's only needs). */
@@ -112,6 +114,10 @@ function makeRequest(opts: RequestOpts): IncomingMessage {
     method: opts.method,
     url: opts.url,
     headers,
+    // Loopback by default, like the browser this route serves: the download
+    // fence reads `socket.remoteAddress`, and a request without a socket made
+    // that path throw instead of answering.
+    socket: { remoteAddress: opts.remoteAddress ?? '127.0.0.1' },
     [Symbol.asyncIterator]() {
       let i = 0
       return {
@@ -513,6 +519,34 @@ describe('GET /dsh-market/installed — local repository evidence', () => {
       repoIdentities: { 'dsh-vision-bridge': ['gxx182/dsh-vision-bridge'] },
       repoHints: {},
     })
+  })
+})
+
+describe('GET /dsh-market/backup — a failure says why (#55)', () => {
+  // kettly1260 hit "Error: HTTP 500" and asked how to find out more: the route
+  // did answer with the reason, the client threw it away. Both ends are
+  // asserted here — the body carries the reason, and the log carries it too so
+  // a report can include it.
+  it('names the cap when the profile has more configuration files than a backup holds', async () => {
+    writeStandardProfile()
+    for (let i = 0; i < 300; i++) writeFileSync(join(dir, `conf-${String(i)}.yml`), `key: ${String(i)}\n`)
+    configurePersistentLog(join(tmp, 'log.ndjson'))
+    let res: Captured
+    try {
+      res = await hit(routes, '/dsh-market/backup', { method: 'GET', url: '/dsh-market/backup', host: HOST })
+    } finally { configurePersistentLog(null) }
+    expect(res.status).toBe(500)
+    const body = JSON.parse(res.body) as { error: string }
+    expect(body.error).toContain('配置文件超过 256 个')
+    expect(body.error).toContain('Export selected plugins instead')
+    expect(readPersistentLog(join(tmp, 'log.ndjson')).join('\n')).toContain('"event":"backup"')
+  })
+
+  it('still exports a profile inside the cap', async () => {
+    writeStandardProfile()
+    const res = await hit(routes, '/dsh-market/backup', { method: 'GET', url: '/dsh-market/backup', host: HOST })
+    expect(res.status).toBe(200)
+    expect(JSON.parse(res.body).files.length).toBeGreaterThan(0)
   })
 })
 

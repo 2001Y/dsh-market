@@ -572,6 +572,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			tabThemes: "主题",
 			tabBackup: "备份与恢复",
 			backupLocal: "本地文件",
+			backupExportFailed: "导出备份失败",
 			backupDownload: "导出备份",
 			backupImport: "导入并预览",
 			backupHint: "仅包含插件清单和 profile 配置，不含插件文件；恢复时按清单重新安装。",
@@ -1277,6 +1278,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			tabThemes: "Themes",
 			tabBackup: "Backup & Restore",
 			backupLocal: "Local file",
+			backupExportFailed: "Backup export failed",
 			backupDownload: "Export backup",
 			backupImport: "Import and preview",
 			backupHint: "Includes the plugin list and profile configuration, not the plugin files. Restore reinstalls them from the list.",
@@ -9126,9 +9128,12 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			/** Download a host endpoint as a file — primitives Button can't be an <a download>.
 			* Prefers the server's Content-Disposition filename (e.g. the timestamped
 			* backup export) and falls back to the caller's name. */
-			const downloadFile = (0, react.useCallback)((url, filename) => {
-				fetch(url).then((res) => {
-					if (!res.ok) throw new Error("HTTP " + res.status);
+			const downloadFile = (0, react.useCallback)((url, filename, failureLabel) => {
+				fetch(url).then(async (res) => {
+					if (!res.ok) {
+						const detail = await res.json().then((body) => typeof body.error === "string" && body.error !== "" ? body.error : null, () => null);
+						throw new Error(`${failureLabel ?? ""}${detail ?? "HTTP " + res.status}`);
+					}
 					const disposition = res.headers.get("content-disposition");
 					if (disposition !== null) {
 						const match = /filename="?([^";]+)"?/.exec(disposition);
@@ -12211,7 +12216,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 													size: "sm",
 													icon: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconDownloadOutline16, { size: 14 }),
 													disabled: backupBusy,
-													onClick: () => downloadFile(api("/dsh-market/backup"), "dsh-profile-backup.json"),
+													onClick: () => downloadFile(api("/dsh-market/backup"), "dsh-profile-backup.json", t("backupExportFailed") + "："),
 													children: backupBusy ? t("backupWorking") : t("backupDownload")
 												}),
 												/* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {

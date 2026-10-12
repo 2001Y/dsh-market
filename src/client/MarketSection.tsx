@@ -2963,10 +2963,19 @@ export function MarketSection(props: MarketSectionProps) {
   /** Download a host endpoint as a file — primitives Button can't be an <a download>.
    * Prefers the server's Content-Disposition filename (e.g. the timestamped
    * backup export) and falls back to the caller's name. */
-  const downloadFile = useCallback((url: string, filename: string) => {
+  const downloadFile = useCallback((url: string, filename: string, failureLabel?: string) => {
     fetch(url)
-      .then(res => {
-        if (!res.ok) throw new Error('HTTP ' + res.status)
+      .then(async res => {
+        if (!res.ok) {
+          // The server's body carries WHY it failed (a profile with too many
+          // config files, an unreadable one, …). Showing only the status left
+          // the user with "HTTP 500" and nothing to do about it.
+          const detail = await res.json().then(
+            (body: { error?: unknown }) => typeof body.error === 'string' && body.error !== '' ? body.error : null,
+            () => null,
+          )
+          throw new Error(`${failureLabel ?? ''}${detail ?? 'HTTP ' + res.status}`)
+        }
         const disposition = res.headers.get('content-disposition')
         if (disposition !== null) {
           const match = /filename="?([^";]+)"?/.exec(disposition)
@@ -5943,7 +5952,7 @@ export function MarketSection(props: MarketSectionProps) {
                       size="sm"
                       icon={<IconDownloadOutline16 size={14} />}
                       disabled={backupBusy}
-                      onClick={() => downloadFile(api('/dsh-market/backup'), 'dsh-profile-backup.json')}
+                      onClick={() => downloadFile(api('/dsh-market/backup'), 'dsh-profile-backup.json', t('backupExportFailed') + '：')}
                     >{backupBusy ? t('backupWorking') : t('backupDownload')}</Button>
                     <Button
                       variant="outline"
