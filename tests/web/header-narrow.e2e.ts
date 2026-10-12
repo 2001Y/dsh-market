@@ -18,12 +18,19 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { dshAvailable, launchMarketScaffold, openMarketPage } from './scaffold.ts'
 import type { WebScaffold } from './scaffold.ts'
 
-describe.skipIf(!dshAvailable())('web e2e: the market header in a narrow panel (#842)', () => {
+// `.sequential` like every other file in this suite: two market scaffolds at
+// once race each other on the same host, and the loser never reaches the
+// settings button (measured on 0.1.0-rc.8 in CI).
+describe.skipIf(!dshAvailable()).sequential('web e2e: the market header in a narrow panel (#842)', () => {
   let s: WebScaffold, browser: Browser, page: Page
   beforeAll(async () => {
     s = await launchMarketScaffold()
     browser = await chromium.launch()
-    page = await browser.newPage({ viewport: { width: 640, height: 800 } })
+    // Navigate wide first: at 640px the old hosts collapse the settings entry
+    // into a rail, so the entry the market is opened from is not reachable
+    // (measured on 0.1.0-rc.8). The panel is then narrowed to the width the
+    // layout has to survive.
+    page = await browser.newPage({ viewport: { width: 1200, height: 800 } })
     await openMarketPage(page, s)
     for (let i = 0; i < 6; i++) {
       const b = page.getByRole('button', { name: /^(Continue|继续|Configure later|稍后配置)$/ }).first()
@@ -32,6 +39,8 @@ describe.skipIf(!dshAvailable())('web e2e: the market header in a narrow panel (
     await page.getByRole('button', { name: /^(设置|Settings)$/ }).first().click()
     await page.getByRole('button', { name: /插件市场|Plugin Market/ }).click()
     await page.waitForSelector('[class*="masonryCol"] [class*="card"]', { timeout: 60_000 })
+    await page.setViewportSize({ width: 640, height: 800 })
+    await page.getByRole('button', { name: /插件市场|Plugin Market/ }).waitFor()
   }, 300_000)
   afterAll(async () => { await browser?.close(); await s?.close() })
 
