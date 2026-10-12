@@ -674,6 +674,9 @@ const hotHandles = new Map<string, PluginHandle>()
 /** Activation did not settle within HOT_MOUNT_TIMEOUT_MS. */
 class ActivationTimeout extends Error {}
 
+/** Disposal did not settle within HOT_MOUNT_TIMEOUT_MS (see `hotUnmount`). */
+class DisposalTimeout extends Error {}
+
 /**
  * Race an activation awaitable against the hot-mount ceiling. The handlers
  * stay attached to the original promise, so a late rejection after a timeout
@@ -707,16 +710,46 @@ export interface HotMountResult {
 export async function hotUnmount(packageName: string): Promise<boolean> {
   const handle = hotHandles.get(packageName)
   if (handle === undefined) return false
+  // Dropped from the table BEFORE the wait, so a teardown that never finishes
+  // cannot keep this package registered: a later attempt starts from clean
+  // state instead of reusing a handle already being disposed.
   hotHandles.delete(packageName)
   shimNames.delete(packageName)
+  const disposal = Promise.resolve().then(() => handle.dispose())
+  // Same ceiling as mounting, and the same reason (#582, measured class of
+  // report): a plugin whose teardown waits for something that never arrives
+  // used to hold the toggle route open forever, and every later operation
+  // queued behind the lock it never released — the UI simply stopped
+  // answering until the host restarted. Handlers stay attached to the
+  // original promise, so a late settlement is logged rather than surfacing
+  // as an unhandled rejection.
+  let answered = false
+  void disposal.then(
+    () => { if (answered) logEvent('info', 'hot-unmount', `${packageName}: teardown finished after the wait`) },
+    (error: unknown) => {
+      logEvent('warn', 'hot-unmount', `${packageName}: dispose failed${answered ? ' after the wait' : ''} — ${error instanceof Error ? error.message : String(error)}`)
+    },
+  )
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    await handle.dispose()
+    await Promise.race([
+      disposal,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new DisposalTimeout(`${packageName}: teardown did not settle within ${HOT_MOUNT_TIMEOUT_MS / 1000}s`)), HOT_MOUNT_TIMEOUT_MS)
+      }),
+    ])
+    answered = true
     logEvent('info', 'hot-unmount', `${packageName}: removed live`)
     return true
   } catch (error) {
-    logEvent('warn', 'hot-unmount', `${packageName}: dispose failed — ${error instanceof Error ? error.message : String(error)}`)
+    answered = true
+    if (error instanceof DisposalTimeout) {
+      logEvent('warn', 'hot-unmount', `${packageName}: its teardown did not settle within ${HOT_MOUNT_TIMEOUT_MS / 1000}s, so it could not be confirmed stopped — it is off from the next start`)
+    } else {
+      logEvent('warn', 'hot-unmount', `${packageName}: dispose failed — ${error instanceof Error ? error.message : String(error)}`)
+    }
     return false
-  }
+  } finally { clearTimeout(timer) }
 }
 
 /**
