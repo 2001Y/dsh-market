@@ -5573,6 +5573,7 @@ export function MarketSection(props: MarketSectionProps) {
               find the repo it came from. */}
           <a className={css.repoLink} href="https://github.com/dsh-market/dsh-market" target="_blank" rel="noreferrer" title="dsh-market · GitHub">dsh-market</a>
           {version !== null && <span className={css.version} title={t('versionHint')}>v{version}</span>}
+          <div className={css.titleActions}>
           {(() => {
             const self = installed['dshmarket'] !== undefined ? 'dshmarket' : 'dsh-market'
             const status = updates[self]
@@ -5606,6 +5607,7 @@ export function MarketSection(props: MarketSectionProps) {
               onClick={() => ignoreUpdateNotices(reminderUpdateNames)}
             >{t('ignoreAllUpdateNotices')}</Button>
           )}
+          </div>
         </div>
         <div className={css.sub}>
           <span>{t('subtitle')}</span>
