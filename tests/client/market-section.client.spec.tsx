@@ -5980,6 +5980,28 @@ describe('boot-scoped update reminder dismissals (#419)', () => {
     expect(await screen.findByRole('button', { name: /Update all \(2\)/ })).toBeTruthy()
   })
 
+  it('says the branch has unreleased commits instead of claiming it is up to date (#824 follow-up)', async () => {
+    // A floating git row whose repository moved without publishing: the market
+    // offers no update, and "Up to date" was the wrong fact — the install IS
+    // behind, it is just behind an unreleased commit.
+    stubFetch({
+      '/dsh-market/installed': { profile: 'web', installed, live: Object.keys(installed) },
+      '/dsh-market/status': { active: false, busy: false, pnpm: true, boot: 'boot-1', restart: true, installed },
+      '/dsh-market/updates': {
+        updates: {
+          'dsh-loop': { kind: 'github', version: '1.0.0', current: 'aaaaaaa', latest: 'bbbbbbb7c1d2e3f40516', updateAvailable: false, unreleasedCommit: 'bbbbbbb7c1d2e3f40516' },
+          'dsh-notify': { kind: 'npm', version: '1.0.0', current: '1.0.0', latest: '1.0.0', updateAvailable: false },
+        },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    fireEvent.click(await screen.findByRole('button', { name: /^Installed/ }))
+    expect(await screen.findByText(en.unreleasedCommits.replace('{0}', 'bbbbbbb'))).toBeTruthy()
+    // The row that HAS a release is untouched, and neither row offers a button.
+    expect(screen.getAllByText(en.upToDate)).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: en.update })).toBeNull()
+  })
+
   it('keeps the saved mark on an up-to-date row, and adds no status line to other up-to-date rows', async () => {
     stubFetch({
       '/dsh-market/installed': {
