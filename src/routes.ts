@@ -701,6 +701,16 @@ export function mountMarketRoutes(
    * newer decision than the market's list (the market removes a name from
    * its list BEFORE writing its own enable row), so the list follows it.
    *
+   * Scoped to THIS profile's layer, deliberately (#519). DSH also composes a
+   * home-level layer, and a third-party manager that wrote its switches there
+   * asked us to follow that too. We do not: the market writes the profile
+   * layer and nothing else, so following a layer it cannot write would give
+   * the user a switch that appears to work and silently reverts at the next
+   * boot — worse than a boundary they can see. What a home-level decision
+   * DOES get is a name in the log when the market overrides it (see
+   * `noteHomeLayerConflict`), so nobody has to guess why a plugin came back
+   * off.
+   *
    * @returns true when the package was re-enabled elsewhere and has been
    *   dropped from the market's disable list.
    */
@@ -714,6 +724,27 @@ export function mountMarketRoutes(
     return true
   }
 
+  /**
+   * Say so when the market overrides an enable recorded in the HOME patch
+   * layer (#519).
+   *
+   * The market keeps a plugin off from its own record; a decision in the
+   * profile layer is followed instead (`followOutsideEnable`), but the home
+   * layer is not read for it — see there for why. The cost of that boundary
+   * is a plugin that turns off again on every boot while another manager's
+   * layer says it should be on: a perfectly reasonable thing for a user to be
+   * confused by, and its only explanation today was silence.
+   */
+  function noteHomeLayerConflict(name: string): void {
+    const homePatchPath = join(resolveDshHome(), 'cordis.patch.yml')
+    const home = readUserPatchState(homePatchPath)
+    if (home.forced.length === 0) return
+    const flags = packagePatchFlags(host, activeProfileDir, [name], home)
+    if (!flags.forced.includes(name) || flags.disabled.includes(name)) return
+    logEvent('warn', 'toggle',
+      `${name}: kept off by this market's own record, while ${homePatchPath} enables it — that layer is not the one the market writes, so the market will not follow it. Move the row into this profile's cordis.patch.yml to make it stick (#519)`)
+  }
+
   // Client-only packages (dsh.client without dsh.bundle) are invisible to the
   // bundle layer in every boot; the market shim-mounts them so their client
   // bundles are actually served.
@@ -725,6 +756,7 @@ export function mountMarketRoutes(
     // shims for disabled plugins were already skipped by mountClientOnlyDeps.
     for (const name of [...disabled]) {
       if (followOutsideEnable(name)) continue
+      noteHomeLayerConflict(name)
       if (await themes.setEntryDisabled(name, true)) logEvent('info', 'boot', `plugin kept off: ${name}`)
     }
   })

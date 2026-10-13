@@ -7121,6 +7121,35 @@ describe('disable-list replay at boot (#60)', () => {
     expect(entry.fiber).toBeUndefined()
     bed2.dispose()
   })
+
+  it('does not follow an enable in the HOME patch layer, and says why (#519)', async () => {
+    // A third-party manager wrote its switches into $DSH_HOME/cordis.patch.yml
+    // and asked the market to follow that layer too. It does not, on purpose:
+    // the market writes only the profile layer, so following a layer it cannot
+    // write would give the user a switch that looks like it works and silently
+    // reverts at the next boot. What it owes that user is an explanation —
+    // silence here is what made the whole thing look like a bug.
+    hot.disabled = new Set(['theme-a'])
+    writeFileSync(join(process.env.DSH_HOME as string, 'cordis.patch.yml'), '- id: theme-a\n  disabled: false\n')
+    const entry = {
+      options: { id: 'theme-a', name: 'theme-a', disabled: null as boolean | null },
+      fiber: {} as unknown,
+      update: vi.fn(async (options: { disabled: boolean | null }) => {
+        entry.options.disabled = options.disabled
+        if (options.disabled === true) entry.fiber = undefined
+      }),
+    }
+    const bed2 = createTestbed()
+    bed2.loaderEntries.push(entry)
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 0))
+
+    expect(entry.options.disabled).toBe(true)
+    const logs = await bed2.dispatch('GET', '/dsh-market/logs')
+    expect(logs.text).toContain('theme-a')
+    expect(logs.text).toContain('cordis.patch.yml')
+    expect(logs.text).toContain('#519')
+    bed2.dispose()
+  })
 })
 
 describe('custom groups (#60)', () => {
