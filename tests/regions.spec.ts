@@ -79,17 +79,51 @@ describe('routesFor', () => {
     // Trailing slashes are stripped so callers can join without doubling.
     expect(routes.npmRegistry).toBe('https://npm.internal')
     expect(routes.githubProxy).toBe('https://gh.internal')
-    expect(routes.githubRoutes.raw).toEqual(['https://gh.internal', null])
-    expect(routes.githubRoutes.git).toEqual(['https://gh.internal', null])
-    expect(routes.githubRoutes.avatar).toEqual(['https://gh.internal', null])
+    // The override leads; the region's own chain still follows it (#850).
+    expect(routes.githubRoutes.raw).toEqual([
+      'https://gh.internal', 'https://gh-proxy.com', 'https://ghfast.top', null,
+    ])
+    expect(routes.githubRoutes.git).toEqual([
+      'https://gh.internal', null, 'https://gh-proxy.com', 'https://ghfast.top',
+    ])
+    expect(routes.githubRoutes.avatar).toEqual(routes.githubRoutes.git)
   })
 
-  it('lets a persisted custom prefix replace built-ins while the environment stays authoritative', () => {
+  it('heads the built-in fallbacks with a persisted custom prefix instead of replacing them (#850)', () => {
     setCustomGithubProxy('https://saved.example/proxy')
-    expect(routesFor('china', {}).githubRoutes.raw).toEqual(['https://saved.example/proxy', null])
-    expect(routesFor('global', {}).githubRoutes.git).toEqual(['https://saved.example/proxy', null])
+    // The saved prefix leads; the chain that was measured to work survives it,
+    // because a public mirror dying is the whole reason the setting exists.
+    expect(routesFor('china', {}).githubRoutes.raw).toEqual([
+      'https://saved.example/proxy', 'https://gh-proxy.com', 'https://ghfast.top', null,
+    ])
+    // `null` stays in the list: `githubRoutes` promises a direct escape, and
+    // dropping it would turn a dead mirror into an outage instead of a slow
+    // request — the outage the reporter actually hit.
+    expect(routesFor('china', {}).githubRoutes.git).toEqual([
+      'https://saved.example/proxy', null, 'https://gh-proxy.com', 'https://ghfast.top',
+    ])
+    expect(routesFor('china', {}).githubRoutes.avatar).toEqual(routesFor('china', {}).githubRoutes.git)
+    // The environment stays authoritative, under the same rule.
     expect(routesFor('china', { DSHM_GITHUB_PROXY: 'https://env.example' }).githubRoutes.raw)
-      .toEqual(['https://env.example', null])
+      .toEqual(['https://env.example', 'https://gh-proxy.com', 'https://ghfast.top', null])
+  })
+
+  it('leaves the global route with its single direct escape under a custom prefix (#850)', () => {
+    setCustomGithubProxy('https://saved.example/proxy')
+    expect(routesFor('global', {}).githubRoutes.raw).toEqual(['https://saved.example/proxy', null])
+    expect(routesFor('global', {}).githubRoutes.git).toEqual(['https://saved.example/proxy', null])
+  })
+
+  it('hands back exactly the region table when the saved prefix is the one it already uses (#850)', () => {
+    // The settings UI pre-suggests the china proxy, so accepting the suggestion
+    // must not spend an attempt on the same prefix twice.
+    setCustomGithubProxy('https://gh-proxy.com')
+    expect(routesFor('china', {}).githubRoutes.raw).toEqual([
+      'https://gh-proxy.com', 'https://ghfast.top', null,
+    ])
+    expect(routesFor('china', {}).githubRoutes.git).toEqual([
+      'https://gh-proxy.com', null, 'https://ghfast.top',
+    ])
   })
 
   it('replaces the whole source list when the catalog itself is overridden', () => {

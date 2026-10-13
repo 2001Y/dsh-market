@@ -7419,7 +7419,12 @@ describe('download region', () => {
     bed = createTestbed({ region: 'china' })
     const status = (await bed.dispatch('GET', '/dsh-market/status')).json
     expect(status.githubProxyManaged).toBe(true)
-    expect(status.githubRoutes.raw).toEqual(['https://env.example', null])
+    // The override leads and the region's own chain follows it (#850): the
+    // direct escape is what makes a dead mirror a slow request rather than an
+    // outage, and it stays the last candidate either way.
+    expect(status.githubRoutes.raw).toEqual([
+      'https://env.example', 'https://gh-proxy.com', 'https://ghfast.top', null,
+    ])
     expect((await bed.dispatch('POST', '/dsh-market/github-proxy', { proxy: null })).status).toBe(409)
   })
 
