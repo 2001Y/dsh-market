@@ -1991,15 +1991,18 @@ export function MarketSection(props: MarketSectionProps) {
   type NoteRelease = { tag: string | null; name: string | null; publishedAt: string | null; url: string | null; body: string }
   type NoteCommit = { sha: string; message: string; date: string | null }
   interface UpdateNotes {
-    kind: 'release' | 'commits' | 'npm' | 'none'
+    kind: 'release' | 'commits' | 'npm' | 'source' | 'none'
     release?: NoteRelease
     commits?: { items: NoteCommit[]; found: boolean }
     npmTimes?: Array<{ version: string; date: string }>
+    sourceUrl?: string | null
+    reason?: 'missing' | 'unavailable'
   }
   type ResolvedNotes =
     | { kind: 'release'; release: NoteRelease }
     | { kind: 'commits'; commits: { items: NoteCommit[]; found: boolean } }
     | { kind: 'npm'; npmTimes: Array<{ version: string; date: string }> }
+    | { kind: 'source'; sourceUrl?: string | null; reason?: 'missing' | 'unavailable' }
     | { kind: 'none' }
   interface CompatibilityNotice {
     code: 'soft-incompatible'
@@ -7560,6 +7563,14 @@ export function MarketSection(props: MarketSectionProps) {
                     </li>
                   ))}
                 </ul>
+              </div>
+            )
+            : updateNotes.kind === 'source' ? (
+              <div className={css.spec}>
+                {t(updateNotes.reason === 'unavailable' ? 'notesLoadFail' : 'notesSource')}
+                {typeof updateNotes.sourceUrl === 'string' && /^https?:\/\//i.test(updateNotes.sourceUrl)
+                  ? <>{lang === 'zh' ? '' : ' '}<a className={css.notesSourceLink} href={updateNotes.sourceUrl} target="_blank" rel="noreferrer">{t('notesSourceLink')}</a></>
+                  : updateNotes.reason !== 'unavailable' && <>{lang === 'zh' ? '' : ' '}{t('notesSourceNoLink')}</>}
               </div>
             )
             : <div className={css.spec}>{t('notesNone')}</div>

@@ -262,6 +262,66 @@ describe('api() base resolution (#345)', () => {
       url === '/app/my-dsh/dsh-market/changelog?name=dsh-loop')).toBe(true)
   })
 
+  describe('notes the market does not hold (#819)', () => {
+    const ZH_LOCALE = { active: 'zh' }
+    function openNotes(changelog: object, dict: Record<string, string> = en): Promise<HTMLElement> {
+      stubFetch({
+        '/dsh-market/installed': {
+          profile: 'web', installed: { 'dsh-codearts-auth': 'git+https://gitee.com/o/r.git' }, live: [], disabled: [], notes: {},
+        },
+        '/dsh-market/updates': {
+          updates: { 'dsh-codearts-auth': { kind: 'github', current: 'a'.repeat(40), latest: 'b'.repeat(40), updateAvailable: true } },
+        },
+        '/dsh-market/changelog': changelog,
+      })
+      const localized = dict === en ? {} : {
+        t: (key: string) => dict[key] ?? key,
+        locale: { subscribe: () => () => {}, getSnapshot: () => ZH_LOCALE },
+      }
+      render(<MarketSection {...props()} {...localized} preferredSubsectionId="installed" />)
+      return screen.findByRole('button', { name: new RegExp(dict.notesLink!) }).then((button) => {
+        fireEvent.click(button)
+        return button
+      })
+    }
+
+    it('says the market has none yet and links to the repository, instead of blaming the plugin', async () => {
+      await openNotes({ kind: 'source', reason: 'missing', sourceUrl: 'https://gitee.com/o/r' })
+      expect(await screen.findByText(new RegExp(en.notesSource))).toBeTruthy()
+      expect(screen.getByRole('link', { name: en.notesSourceLink }).getAttribute('href')).toBe('https://gitee.com/o/r')
+      expect(screen.queryByText(en.notesNone)).toBeNull()
+    })
+
+    it('calls a failed load passing, and still links to the repository', async () => {
+      await openNotes({ kind: 'source', reason: 'unavailable', sourceUrl: 'https://gitee.com/o/r' })
+      expect(await screen.findByText(new RegExp(en.notesLoadFail))).toBeTruthy()
+      expect(screen.queryByText(new RegExp(en.notesSource))).toBeNull()
+      expect(screen.getByRole('link', { name: en.notesSourceLink })).toBeTruthy()
+    })
+
+    it('offers a next step when there is nothing to link to', async () => {
+      await openNotes({ kind: 'source', reason: 'missing', sourceUrl: null })
+      expect(await screen.findByText(new RegExp(en.notesSourceNoLink))).toBeTruthy()
+      expect(screen.queryByRole('link', { name: en.notesSourceLink })).toBeNull()
+    })
+
+    it('joins the two Chinese sentences without a space, and the English ones with one', async () => {
+      await openNotes({ kind: 'source', reason: 'missing', sourceUrl: null }, zh)
+      const zhLine = await screen.findByText(new RegExp(zh.notesSourceNoLink))
+      expect(zhLine.textContent).toBe(`${zh.notesSource}${zh.notesSourceNoLink}`)
+      cleanup()
+      await openNotes({ kind: 'source', reason: 'missing', sourceUrl: null })
+      const enLine = await screen.findByText(new RegExp(en.notesSourceNoLink))
+      expect(enLine.textContent).toBe(`${en.notesSource} ${en.notesSourceNoLink}`)
+    })
+
+    it('does not render a link that is not http(s)', async () => {
+      await openNotes({ kind: 'source', reason: 'missing', sourceUrl: 'javascript:alert(1)' })
+      expect(await screen.findByText(new RegExp(en.notesSourceNoLink))).toBeTruthy()
+      expect(screen.queryByRole('link', { name: en.notesSourceLink })).toBeNull()
+    })
+  })
+
   it('leaves no root-absolute endpoint anywhere in the client source', () => {
     // #345 has now been fixed twice. The first fix converted every endpoint
     // that existed; changelog and personal notes were written afterwards, as
