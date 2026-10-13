@@ -11,7 +11,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { invalidateUpdateNotes, loadUpdateNotes, sliceCommitsAt, updateNotesFor } from '../src/changelog.ts'
+import { invalidateUpdateNotes, loadUpdateNotes, sliceCommitsAt, sourceWebUrl, updateNotesFor } from '../src/changelog.ts'
 import { forgetCatalog } from '../src/registry.ts'
 
 const SHA_A = 'a'.repeat(40)
@@ -181,10 +181,12 @@ describe('updateNotesFor', () => {
     expect(notes.release?.body).toBe('notes here')
   })
 
-  it('answers none without erroring when nothing answers at all', async () => {
+  it('calls the notes unavailable, not missing, when nothing answers at all', async () => {
     writeProfile(dir, { 'some-plugin': 'github:o/r' })
     stubWorld({ originStatus: 500, headSha: null })
-    await expect(updateNotesFor('web', dir, 'some-plugin')).resolves.toEqual({ kind: 'none' })
+    await expect(updateNotesFor('web', dir, 'some-plugin')).resolves.toEqual({
+      kind: 'source', reason: 'unavailable', sourceUrl: 'https://github.com/o/r',
+    })
   })
 
   it('does not consult the catalog when a github root install has no probe data', async () => {
@@ -201,7 +203,9 @@ describe('updateNotesFor', () => {
       return new Response('{}', { status: 200 })
     })
     vi.stubGlobal('fetch', fetchMock)
-    await expect(updateNotesFor('web', dir, 'some-plugin')).resolves.toEqual({ kind: 'none' })
+    await expect(updateNotesFor('web', dir, 'some-plugin')).resolves.toEqual({
+      kind: 'source', reason: 'missing', sourceUrl: 'https://github.com/o/r',
+    })
     const urls = fetchMock.mock.calls.map(call => String(call[0]))
     expect(urls.some(url => url.includes('plugins.json') || url.includes('dsh-plugin-catalog'))).toBe(false)
   })
@@ -439,6 +443,190 @@ describe('updateNotesFor', () => {
         { name: 'monorepo#other', npm: 'dsh-other', url: other, category: 'utility' },
       ],
     )
-    await expect(updateNotesFor('web', dir, 'dsh-pet')).resolves.toEqual({ kind: 'none' })
+    await expect(updateNotesFor('web', dir, 'dsh-pet')).resolves.toEqual({
+      kind: 'source', reason: 'missing', sourceUrl: 'https://github.com/owner/monorepo',
+    })
+  })
+
+  it('says "no notes" only when the probe ran and found nothing', async () => {
+    writeProfile(dir, { 'some-plugin': 'github:o/r' })
+    stubWorld({ payload: { count: 1, updates: { 'https://github.com/o/r': { commits: [] } } } })
+    await expect(updateNotesFor('web', dir, 'some-plugin')).resolves.toEqual({ kind: 'none' })
+  })
+})
+
+/**
+ * #819: a plugin installed from gitee showed the publish times of an
+ * unrelated npm package that happens to share its name. Only an npm install
+ * may be answered from npm; every other source is pointed at instead.
+ */
+describe('updateNotesFor — sources other than npm (#819)', () => {
+  const GITEE = 'git+https://gitee.com/iJetLi/deepseek-harness-codearts.git'
+  let dir: string
+
+  /** Origin payload, catalog and npm, recording every URL asked for. */
+  function stubAll(options: { payload?: object; plugins?: object[]; times?: Record<string, string> } = {}): () => string[] {
+    const asked: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = String(input)
+      asked.push(url)
+      if (url.endsWith('/dsh-plugin-updates/latest')) return new Response('no', { status: 404 })
+      if (url.endsWith('updates.json')) return new Response(JSON.stringify(options.payload ?? { count: 0, updates: {} }), { status: 200 })
+      if (url.includes('awesome-dsh-plugin.com') || url.includes('plugins.json') || url.includes('dsh-plugin-catalog')) {
+        return new Response(JSON.stringify({ plugins: options.plugins ?? [] }), { status: 200 })
+      }
+      if (url.includes('registry.npmjs.org')) {
+        return new Response(JSON.stringify({ time: options.times ?? { '1.0.261007': '2026-10-07T00:00:00Z' } }), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    }))
+    return () => asked
+  }
+
+  /** Whether npm was asked about `name` itself — not the notes package the market reads. */
+  function askedNpmFor(asked: string[], name: string): boolean {
+    return asked.some(url => url.endsWith(`/${encodeURIComponent(name)}`))
+  }
+
+  function writeProfile(dependencies: Record<string, string>, lock?: string): void {
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'dsh-profile-web', private: true, dependencies }))
+    if (lock !== undefined) writeFileSync(join(dir, 'pnpm-lock.yaml'), lock)
+  }
+
+  beforeEach(() => {
+    invalidateUpdateNotes()
+    forgetCatalog()
+    vi.unstubAllGlobals()
+    dir = mkdtempSync(join(tmpdir(), 'dshm-notes-819-'))
+  })
+  afterEach(() => { vi.unstubAllGlobals(); rmSync(dir, { recursive: true, force: true }) })
+
+  it('never asks npm about a gitee install, and points at its repository', async () => {
+    writeProfile({ 'dsh-codearts-auth': GITEE })
+    const asked = stubAll()
+    await expect(updateNotesFor('web', dir, 'dsh-codearts-auth')).resolves.toEqual({
+      kind: 'source', reason: 'missing', sourceUrl: 'https://gitee.com/iJetLi/deepseek-harness-codearts',
+    })
+    expect(askedNpmFor(asked(), 'dsh-codearts-auth')).toBe(false)
+  })
+
+  it('still points a gitee install at its repository when the notes cannot load', async () => {
+    writeProfile({ 'dsh-codearts-auth': GITEE })
+    const asked: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      asked.push(String(input))
+      return new Response('no', { status: 503 })
+    }))
+    await expect(updateNotesFor('web', dir, 'dsh-codearts-auth')).resolves.toEqual({
+      kind: 'source', reason: 'unavailable', sourceUrl: 'https://gitee.com/iJetLi/deepseek-harness-codearts',
+    })
+    expect(askedNpmFor(asked, 'dsh-codearts-auth')).toBe(false)
+  })
+
+  it('does not borrow the notes of a same-named catalog plugin from another repository', async () => {
+    writeProfile({ 'dsh-codearts-auth': GITEE })
+    stubAll({
+      payload: { count: 1, updates: { 'https://github.com/weiyou/dsh-codearts-auth': { commits: COMMITS } } },
+      plugins: [{ name: 'dsh-codearts-auth', npm: 'dsh-codearts-auth', url: 'https://github.com/weiyou/dsh-codearts-auth', category: 'utility' }],
+    })
+    await expect(updateNotesFor('web', dir, 'dsh-codearts-auth')).resolves.toMatchObject({ kind: 'source' })
+  })
+
+  it('uses the catalog row of the same repository on another host', async () => {
+    const url = 'https://gitlab.com/o/r'
+    writeProfile({ 'lab-plugin': 'gitlab:o/r' })
+    stubAll({
+      payload: { count: 1, updates: { [url]: { commits: COMMITS } } },
+      plugins: [{ name: 'lab-plugin', npm: 'lab-plugin', url, category: 'utility' }],
+    })
+    await expect(updateNotesFor('web', dir, 'lab-plugin')).resolves.toMatchObject({ kind: 'commits' })
+  })
+
+  it('reads a git+https GitHub install as GitHub, sliced at its cloned commit', async () => {
+    const spec = 'git+https://github.com/O/R.git'
+    writeProfile({ 'gh-plugin': spec },
+      `lockfileVersion: '9.0'\n\npackages:\n  gh-plugin@${spec}:\n    resolution: {commit: ${SHA_B}, repo: https://github.com/O/R.git, type: git}\n`)
+    stubAll({ payload: { count: 1, updates: { 'https://github.com/o/r': { commits: COMMITS } } } })
+    await expect(updateNotesFor('web', dir, 'gh-plugin')).resolves.toEqual({
+      kind: 'commits',
+      commits: { items: [{ sha: SHA_C, message: 'third', date: '2026-08-26T03:00:00Z' }], found: true },
+    })
+  })
+
+  it('reads the tree-url notes of a git+https GitHub subpath install', async () => {
+    const tree = 'https://github.com/owner/monorepo/tree/main/packages/pet'
+    writeProfile({ 'dsh-pet': 'git+https://github.com/owner/monorepo.git#path:/packages/pet' })
+    stubAll({
+      payload: { count: 1, updates: { [tree]: { commits: COMMITS } } },
+      plugins: [{ name: 'monorepo#pet', npm: 'dsh-pet', url: tree, category: 'utility' }],
+    })
+    await expect(updateNotesFor('web', dir, 'dsh-pet')).resolves.toMatchObject({ kind: 'commits' })
+  })
+
+  it('never asks npm about a tarball URL install', async () => {
+    writeProfile({ 'tar-plugin': 'https://example.com/tar-plugin-1.0.0.tgz' })
+    const asked = stubAll()
+    await expect(updateNotesFor('web', dir, 'tar-plugin')).resolves.toEqual({ kind: 'source', reason: 'missing', sourceUrl: null })
+    expect(askedNpmFor(asked(), 'tar-plugin')).toBe(false)
+  })
+
+  it('links a GitHub Release asset install to the repository it names', async () => {
+    writeProfile({ 'rel-plugin': 'https://github.com/o/r/releases/download/v1/rel-plugin-1.0.0.tgz' })
+    const asked = stubAll()
+    await expect(updateNotesFor('web', dir, 'rel-plugin')).resolves.toEqual({
+      kind: 'source', reason: 'missing', sourceUrl: 'https://github.com/o/r',
+    })
+    expect(askedNpmFor(asked(), 'rel-plugin')).toBe(false)
+  })
+
+  it('treats a catalog: install as npm', async () => {
+    writeProfile({ 'cat-plugin': 'catalog:' })
+    const asked = stubAll()
+    await expect(updateNotesFor('web', dir, 'cat-plugin')).resolves.toMatchObject({ kind: 'npm' })
+    expect(askedNpmFor(asked(), 'cat-plugin')).toBe(true)
+  })
+
+  it('asks npm about the package an npm: alias really installs', async () => {
+    writeProfile({ 'my-alias': 'npm:@scope/real-plugin@^1.0.0' })
+    const asked = stubAll()
+    const notes = await updateNotesFor('web', dir, 'my-alias')
+    expect(notes.kind).toBe('npm')
+    expect(askedNpmFor(asked(), '@scope/real-plugin')).toBe(true)
+    expect(askedNpmFor(asked(), 'my-alias')).toBe(false)
+  })
+
+  it('keeps npm publish times for an ordinary npm install', async () => {
+    writeProfile({ 'npm-plugin': '^1.0.0' })
+    stubAll()
+    await expect(updateNotesFor('web', dir, 'npm-plugin')).resolves.toMatchObject({ kind: 'npm' })
+  })
+})
+
+describe('sourceWebUrl', () => {
+  it.each([
+    ['git+https://gitee.com/o/r.git', 'https://gitee.com/o/r'],
+    ['git+https://gitee.com/o/r.git#v1.0.0', 'https://gitee.com/o/r'],
+    ['git+https://github.com/O/R.git#path:/packages/pet', 'https://github.com/O/R'],
+    ['github:o/r#main', 'https://github.com/o/r'],
+    ['gitlab:g/s/r', 'https://gitlab.com/g/s/r'],
+    ['git@gitee.com:o/r.git', 'https://gitee.com/o/r'],
+    ['ssh://git@git.example.com:2222/o/r.git', 'https://git.example.com/o/r'],
+    ['git+https://gitee.com:8443/o/r.git', 'https://gitee.com:8443/o/r'],
+  ])('reads %s as %s', (spec, url) => {
+    expect(sourceWebUrl(spec)).toBe(url)
+  })
+
+  it('never carries a token from the spec into the link', () => {
+    const url = sourceWebUrl('git+https://user:s3cret@gitee.com/o/r.git')
+    expect(url).toBe('https://gitee.com/o/r')
+  })
+
+  it.each([
+    'git+file:///tmp/r.git',
+    'git+javascript://x/%0aalert(1)',
+    'https://example.com/plugin-1.0.0.tgz',
+    '^1.0.0',
+  ])('gives no link for %s', (spec) => {
+    expect(sourceWebUrl(spec)).toBeNull()
   })
 })
