@@ -2023,6 +2023,28 @@ describe('MarketSection (jsdom)', () => {
     }
   })
 
+  it('leaves an idle page alone — no /status poll without a queued record (#838)', async () => {
+    // The drain's own comment has always claimed "an idle page makes no
+    // requests", and the loop fetched /status on every tick before asking
+    // whether anything was queued: an open market tab polled the host every
+    // 2 s for as long as it stayed open, with nothing to drain. Real timers,
+    // as in the test above — the loop runs on a real interval and fake ones
+    // would freeze it. The two drain tests above are the other half of this
+    // assertion: with a record queued, the loop still fires.
+    stubFetch()
+    localStorage.clear()
+    render(<MarketSection {...props()} />)
+    await screen.findAllByText('dsh-loop')
+    const statusCalls = () => fetchCalls.filter(call => call.path === '/dsh-market/status').length
+    // Let the mount settle before sampling, so a late first load cannot be
+    // mistaken for a tick of the drain.
+    await new Promise(resolve => setTimeout(resolve, 300))
+    const atRest = statusCalls()
+    // Longer than one 2 s interval, so an ungated loop would have fired.
+    await new Promise(resolve => setTimeout(resolve, 2600))
+    expect(statusCalls()).toBe(atRest)
+  })
+
   it('keeps a queued install across remounts via localStorage', async () => {
     stubFetch({
       '/dsh-market/install': {
