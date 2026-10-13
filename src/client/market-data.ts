@@ -1399,6 +1399,35 @@ export function humanOutput(raw: string): string {
   return kept.join('\n').trim()
 }
 
+/**
+ * One failed operation's sentence for the user: the market's own when the
+ * route sent one, otherwise the tail of pnpm's own output.
+ *
+ * The tail is for the stack, not for our sentences (#848). A route's message
+ * is one bilingual sentence — Chinese first, then English — so keeping the
+ * last 600 characters of it kept the English and threw the Chinese away, which
+ * is the half a Chinese reader needs, and it cut the classifier's
+ * `unused-patch` sentence through the middle of its actionable clause. Every
+ * route sentence is bounded by construction; pnpm's output is not.
+ */
+export function failureText(
+  body: { error?: unknown; stderr?: unknown; stdout?: unknown; exitCode?: unknown },
+  options: { tail?: number; fallback?: string } = {},
+): string {
+  const { tail = 600, fallback = '' } = options
+  const field = (value: unknown): string => typeof value === 'string'
+    ? value
+    : value && typeof (value as { text?: unknown }).text === 'string'
+      ? (value as { text: string }).text
+      : value == null ? '' : JSON.stringify(value)
+  const own = field(body.error)
+  if (own !== '') return own
+  const machine = humanOutput([field(body.stderr), field(body.stdout)].filter(Boolean).join('\n'))
+  if (machine !== '') return machine.slice(-tail)
+  const exit = field(body.exitCode)
+  return exit === '' ? fallback : `exit ${exit}`
+}
+
 /** CJK ideographs — enough to tell a Chinese half from a Latin one. */
 const CJK_RE = /[\u3400-\u9FFF\uF900-\uFAFF]/gu
 

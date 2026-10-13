@@ -72,6 +72,28 @@ describe('classifyPnpmFailure', () => {
     expect(classifyPnpmFailure('[ERR_PNPM_FETCH_404] GET https://registry.npmjs.org/some-ghost: Not Found - 404')?.message).toContain('some-ghost')
   })
 
+  it('names the PACKAGE when the 404 arrived as a tarball URL, not the .tgz file (#848)', () => {
+    // pnpm's 404 can point at a tarball rather than at the package document.
+    // The sentence said "有一个依赖…（retry-0.12.0.tgz）", which is not something
+    // the user can look up in their package.json — and it only started
+    // mattering when this sentence began reaching users instead of the log
+    // (#848 put it in the row). `pkg` itself keeps the last path segment: the
+    // install route compares it against the tarball name to tell "this mirror
+    // has not synced that release" from a ghost entry.
+    const scoped = classifyPnpmFailure('[ERR_PNPM_FETCH_404] GET https://registry.npmjs.org/@types/retry/-/retry-0.12.0.tgz: Not Found - 404')
+    expect(scoped?.code).toBe('fetch-404')
+    expect(scoped?.message).toContain('@types/retry')
+    expect(scoped?.message).not.toContain('retry-0.12.0.tgz)')
+    expect(scoped?.pkg).toBe('retry-0.12.0.tgz')
+    // The percent-encoded scope, as a real URL writes it.
+    expect(classifyPnpmFailure('[ERR_PNPM_FETCH_404] GET https://registry.npmjs.org/@types%2Fretry/-/retry-0.12.0.tgz: Not Found - 404')?.message)
+      .toContain('@types/retry')
+    // Unscoped, and a registry mounted under a path prefix: two segments
+    // before `/-/` are not automatically a scope.
+    expect(classifyPnpmFailure('[ERR_PNPM_FETCH_404] GET https://artifactory.example/api/npm/npm-remote/lodash/-/lodash-4.17.21.tgz: Not Found - 404')?.message)
+      .toContain('（lodash）')
+  })
+
   it('names a patch that no longer applies, and says the package went in unpatched (#222)', () => {
     // pnpm exits 1 here (verified against 10.29.3) but has ALREADY written
     // the package without the patch, so the profile keeps the pristine

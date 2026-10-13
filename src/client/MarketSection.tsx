@@ -50,7 +50,7 @@ import type { OperationRecord } from './operations.ts'
 import { Diagnostics } from './Diagnostics.tsx'
 import { exportMarketLog } from './self-check.ts'
 import {
-  api, applyGithubRouting, avatarColor, catalogEntryForInstalled, entryForDep, githubRouteCandidates, groupSwitchState, humanOutput, installedForCatalog, isGenerationSpec, isInstalled, localizeBilingual, localizeBilingualList, looksTerminal, matchInstalledName, orderedCategories, pluginCategories,
+  api, applyGithubRouting, avatarColor, catalogEntryForInstalled, entryForDep, failureText, githubRouteCandidates, groupSwitchState, installedForCatalog, isGenerationSpec, isInstalled, localizeBilingual, localizeBilingualList, looksTerminal, matchInstalledName, orderedCategories, pluginCategories,
   formatCount, pageItems, pluginName, blockAliases, pluginScreenshotCandidates, pluginScreenshots, pluginsForFavorites, queuedRowApplies, rankThemeScreenshots, readSession, releaseNotesHttpsImage, rememberGithubRoute, resetScreenshotsCache, resolveCatalogRestore, safeScreenshots, sanitizeReleaseNotesBody, staleFavoriteUrls, themePlugins as themePluginsOf, themeSwatch, TIME_RANGE_DAYS, visiblePlugins, restartHintKey,
 } from './market-data.ts'
 import type {
@@ -3179,7 +3179,9 @@ export function MarketSection(props: MarketSectionProps) {
           if (blocked.length > 0) setBuildsSkipped({ plugin, names: blocked })
           const text = (v: unknown) => typeof v === 'string' ? v : (v && typeof (v as any).text === 'string') ? (v as any).text : v == null ? '' : JSON.stringify(v)
           const orphans = Array.isArray(body.orphanBundles) ? body.orphanBundles.map(String) : []
-          const failure = text(body.error) || humanOutput([text(body.stderr), text(body.stdout)].filter(Boolean).join('\n')) || ('exit ' + body.exitCode)
+          // `failureText` keeps a route's own sentence whole and clips only
+          // pnpm's own output (#848).
+          const failure = failureText(body)
           // The profile will not boot as it stands (#339). Said FIRST, because
           // it outranks whatever else went wrong: a plugin that failed to
           // install is recoverable, a profile that cannot start is not — and
@@ -3196,8 +3198,12 @@ export function MarketSection(props: MarketSectionProps) {
           // Carry the blocked names onto the record too: the panel is where
           // this failure is read, so it is where the one-click way out has to
           // be (#314). The reason stays bilingual; the panel localizes it.
+          // Bounded from the FRONT: every piece here is one of our own
+          // sentences now (pnpm's output was clipped inside `failureText`), and
+          // the tail clip this used to do is what cut the Chinese half off a
+          // bilingual sentence (#848).
           setRecords(list => patchRecord(list, recordId, {
-            state: 'failed', reason: detail.trim().slice(-600),
+            state: 'failed', reason: detail.trim().slice(0, 1200),
             ...(blocked.length > 0 ? { blockedBuilds: blocked } : {}),
           }))
           setOperationsOpen(true)
@@ -3239,8 +3245,7 @@ export function MarketSection(props: MarketSectionProps) {
         })
         const body = await response.json() as { ok?: boolean; error?: unknown; stderr?: unknown }
         if (response.status !== 200 || body.ok !== true) {
-          const text = (v: unknown) => typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v)
-          const detail = (text(body.error) || humanOutput(text(body.stderr)) || 'error').trim().slice(-400)
+          const detail = failureText(body, { tail: 400, fallback: 'error' }).trim()
           const reason = removed.length === 0
             ? `${t('installFail')}: ${group.owner} — ${detail}`
             : `${t('conflictReplaceFailed')} ${removed.join(', ')} — ${detail}`
@@ -3533,9 +3538,8 @@ export function MarketSection(props: MarketSectionProps) {
           if (Array.isArray(body.ignoredBuilds) && body.ignoredBuilds.length > 0) {
             setBuildsSkipped({ updateName: name, names: body.ignoredBuilds.map(String), restore })
           }
-          const text = (v: unknown) => typeof v === 'string' ? v : (v && typeof (v as any).text === 'string') ? (v as any).text : v == null ? '' : JSON.stringify(v)
           const orphans = Array.isArray(body.orphanBundles) ? body.orphanBundles.map(String) : []
-          const failure = text(body.error) || humanOutput([text(body.stderr), text(body.stdout)].filter(Boolean).join('\n')) || ('exit ' + body.exitCode)
+          const failure = failureText(body)
           // The profile will not boot as it stands (#339). Said FIRST, because
           // it outranks whatever else went wrong: a plugin that failed to
           // install is recoverable, a profile that cannot start is not — and
@@ -3549,7 +3553,10 @@ export function MarketSection(props: MarketSectionProps) {
             staleEntry,
             failure,
           ].filter(Boolean).join('\n')
-          const clipped = detail.trim().slice(-600)
+          // Front-bounded for the same reason as the install row above (#848):
+          // what is left here is our own bilingual sentence, and keeping its
+          // last 600 characters kept the English and dropped the Chinese.
+          const clipped = detail.trim().slice(0, 1200)
           setRecords(list => patchRecord(list, updateRecordId, { state: 'failed', reason: clipped }))
           // Localize the server half before prepending t() chrome.
           setInstallError((restore ? t('restoreFail') : t('updateFail')) + ': ' + name + ' — ' + localizeBilingual(clipped, lang))
@@ -4051,8 +4058,7 @@ export function MarketSection(props: MarketSectionProps) {
             setInstallError(t('reconciledNote'))
             return
           }
-          const text = (v: unknown) => typeof v === 'string' ? v : (v && typeof (v as any).text === 'string') ? (v as any).text : v == null ? '' : JSON.stringify(v)
-          setInstallError((text(body.error) || humanOutput(text(body.stderr)) || 'error').trim().slice(-600))
+          setInstallError(failureText(body, { fallback: 'error' }).trim())
         }
       })
       .catch(error => setInstallError(String(error)))

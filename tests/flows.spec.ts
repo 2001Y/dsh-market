@@ -2190,6 +2190,43 @@ describe('update flow — no npm publishing required', () => {
     expect(readManifestAt(fake.profileDir).dsh?.profile?.bundles ?? []).not.toContain('dsh-manual')
   })
 
+  it('shows the classifier sentence for a recognized pnpm failure, not the stack tail (#848)', async () => {
+    // The report: a `patchedDependencies` key pinned to a version the update
+    // moves past makes pnpm refuse the WHOLE command, and the market has a
+    // sentence for exactly that failure — with the two ways out — that this
+    // route never asked for. The user got the tail of pnpm's own stack, cut
+    // through the middle.
+    advanceNpmLatest('1.2.0')
+    fake.failNextAddStderrOnce = [
+      '[ERR_PNPM_UNUSED_PATCH] The following patches were not used: dsh-loop@1.1.0',
+      'Either remove them from "patchedDependencies" or update them to match packages in your dependencies.',
+      '    at resolveDependencies2 (/opt/pnpm/dist/pnpm.mjs:177458:5)',
+    ].join('\n')
+
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+
+    expect(r.status).toBe(502)
+    expect(String(r.json.error)).toContain('patchedDependencies')
+    expect(String(r.json.error)).toContain('dsh-loop@1.1.0')
+    // The stack still travels for the log; it is just not what the row shows.
+    expect(String(r.json.stderr)).toContain('resolveDependencies2')
+    expect(String(r.json.error)).not.toContain('resolveDependencies2')
+  })
+
+  it('leaves a blocked build on the update route to the button that clears it (#754)', async () => {
+    // Same rule the #754 gate applies to the banner's own list: this route has
+    // no sentence of its own for a skipped build, so the approve-and-retry
+    // button is the whole answer and the row must not also carry prose.
+    advanceNpmLatest('1.2.0')
+    fake.failNextAddStderrOnce = '[ERR_PNPM_IGNORED_BUILDS]\nIgnored build scripts: dsh-loop@1.2.0.'
+
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+
+    expect(r.status).toBe(502)
+    expect(r.json.ignoredBuilds).toEqual(['dsh-loop'])
+    expect(r.json.error).toBeUndefined()
+  })
+
   it('says nothing about bundles on an ordinary update (#720)', async () => {
     advanceNpmLatest('1.2.0')
     const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
@@ -5732,8 +5769,13 @@ describe('the approve-and-retry banner is offered only for the failure it clears
     expect(failed.status).toBe(502)
     // No approval affordance for a failure approval cannot clear.
     expect(failed.json.ignoredBuilds).toBeUndefined()
-    // And the real cause is what the row shows.
-    expect(String(failed.json.error ?? failed.json.stderr)).toContain('404')
+    // And the real cause is what the row shows — now as the classifier's own
+    // sentence, which names the package and says what such an entry usually
+    // is (#848 took over this slot from the raw stderr tail, which happened to
+    // contain the 404 line among pnpm's progress chatter).
+    expect(String(failed.json.error)).toContain('registry 上不存在')
+    expect(String(failed.json.error)).toContain('@types/retry')
+    expect(String(failed.json.stderr)).toContain('404')
   })
 
   it('still offers it when the blocked build IS the failure (#69)', async () => {
@@ -5766,6 +5808,60 @@ describe('the approve-and-retry banner is offered only for the failure it clears
 
     expect(failed.status).toBe(502)
     expect(failed.json.ignoredBuilds).toBeUndefined()
+  })
+})
+
+describe('a recognized pnpm failure is shown as its own sentence (#848)', () => {
+  const unusedPatch = [
+    '[ERR_PNPM_UNUSED_PATCH] The following patches were not used: dsh-loop@1.1.0',
+    'Either remove them from "patchedDependencies" or update them to match packages in your dependencies.',
+    '    at resolveDependencies2 (/opt/pnpm/dist/pnpm.mjs:177458:5)',
+  ].join('\n')
+
+  function seedInstallable(): void {
+    fake.npm['dsh-loop'] = {
+      latest: '1.0.0',
+      versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } },
+    }
+  }
+
+  it('surfaces it on the install route too — that route was missing it as well', async () => {
+    // The report assumed install was already wired; it was not. Both routes
+    // recognized the failure and dropped the message, so the fix is one shared
+    // last resort rather than a branch in the update route only. This is the
+    // shape the reporter hit: a `patchedDependencies` key pinned to a version
+    // the operation moves past makes pnpm refuse the WHOLE command, and the
+    // sentence that says so — with the two ways out — never reached the user.
+    seedInstallable()
+    fake.failNextAddStderrOnce = unusedPatch
+
+    const failed = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+
+    expect(failed.status).toBe(502)
+    expect(String(failed.json.error)).toContain('patchedDependencies')
+    expect(String(failed.json.error)).toContain('dsh-loop@1.1.0')
+    // The stack still travels for the log; it is just not the sentence the
+    // user reads.
+    expect(String(failed.json.stderr)).toContain('resolveDependencies2')
+    expect(String(failed.json.error)).not.toContain('resolveDependencies2')
+  })
+
+  it('leaves a blocked build to the approve-and-retry button that clears it (#754)', async () => {
+    // Blocked builds have their own UI, which names the action; a second
+    // sentence beside that button is the duplication #754 removed, so this code
+    // is the one the classifier keeps quiet about. On this route the button's
+    // own sentence is what the row shows.
+    seedInstallable()
+    fake.failNextAddStderrOnce = '[ERR_PNPM_IGNORED_BUILDS]\nIgnored build scripts: dsh-loop@1.0.0.'
+
+    const failed = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+
+    expect(failed.status).toBe(502)
+    expect(failed.json.ignoredBuilds).toEqual(['dsh-loop'])
+    expect(String(failed.json.error)).toContain('放行构建脚本并重试')
+    // The classifier's own wording for the same failure would be a second
+    // voice for one thing.
+    expect(String(failed.json.error)).not.toContain('允许构建脚本并重试')
   })
 })
 

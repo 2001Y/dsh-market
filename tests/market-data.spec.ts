@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 import {
-  entryForDep, extractReadmeImageCandidates, extractReadmeImages, formatCount, groupSwitchState, installedForCatalog, isInstalled, isMarketItself, localizeBilingual, localizeBilingualList, looksTerminal, matchInstalledName, orderedCategories, pageItems, pluginCategories, pluginsForFavorites, previewDimensionScore, rankThemeScreenshots, releaseNotesHttpsImage, safeScreenshots, sanitizeReleaseNotesBody, staleFavoriteUrls, themePlugins, visiblePlugins, humanOutput, catalogEntryForInstalled} from '../src/client/market-data.ts'
+  entryForDep, extractReadmeImageCandidates, extractReadmeImages, formatCount, groupSwitchState, installedForCatalog, isInstalled, isMarketItself, localizeBilingual, localizeBilingualList, looksTerminal, matchInstalledName, orderedCategories, pageItems, pluginCategories, pluginsForFavorites, previewDimensionScore, rankThemeScreenshots, releaseNotesHttpsImage, safeScreenshots, sanitizeReleaseNotesBody, staleFavoriteUrls, themePlugins, visiblePlugins, humanOutput, failureText, catalogEntryForInstalled} from '../src/client/market-data.ts'
 import type { RegistryPlugin, ScreenshotCandidate } from '../src/client/market-data.ts'
 
 function plugin(partial: Partial<RegistryPlugin>): RegistryPlugin {
@@ -800,6 +800,47 @@ describe('humanOutput', () => {
   it('leaves ordinary output and malformed lines alone', () => {
     expect(humanOutput('plain error\n{not json\n')).toBe('plain error\n{not json')
     expect(humanOutput('')).toBe('')
+  })
+})
+
+describe('failureText', () => {
+  it('keeps the market\'s own sentence whole, and clips only pnpm\'s output (#848)', () => {
+    // The sentences the routes write are bilingual — Chinese first, then
+    // English — so keeping the last 600 characters kept the English and threw
+    // the Chinese away. Every one of them is bounded by construction; pnpm's
+    // output is the unbounded one.
+    const sentence = `${'中'.repeat(400)} / ${'en'.repeat(400)}`
+    expect(sentence.length).toBeGreaterThan(600)
+    const shown = failureText({ error: sentence, stderr: 'IGNORED', stdout: '', exitCode: 1 })
+    expect(shown).toBe(sentence)
+    expect(shown.startsWith('中')).toBe(true)
+  })
+
+  it('falls back to the tail of pnpm\'s output, dropping progress chatter', () => {
+    const shown = failureText({
+      stderr: [
+        '{"name":"pnpm:fetching-progress","downloaded":1}',
+        `ERR_PNPM_SOMETHING  ${'x'.repeat(700)}`,
+      ].join('\n'),
+      stdout: '',
+      exitCode: 1,
+    })
+    expect(shown.length).toBe(600)
+    expect(shown).not.toContain('fetching-progress')
+    expect(shown.endsWith('x'.repeat(10))).toBe(true)
+  })
+
+  it('honours the caller\'s window and its own fallback', () => {
+    // The uninstall path wants a shorter line and asks for it; the two
+    // callers that show 'error' rather than "exit undefined" say so.
+    expect(failureText({ stderr: 'y'.repeat(500) }, { tail: 400 }).length).toBe(400)
+    expect(failureText({ stderr: '', stdout: '', exitCode: '' }, { fallback: 'error' })).toBe('error')
+    expect(failureText({ stderr: '', stdout: '', exitCode: 3 })).toBe('exit 3')
+  })
+
+  it('reads a route field that arrived as an object with text', () => {
+    expect(failureText({ error: { text: 'the cause', other: 1 } })).toBe('the cause')
+    expect(failureText({ error: { code: 7 } })).toBe('{"code":7}')
   })
 })
 

@@ -89,6 +89,28 @@ export function isTransientPnpmFailure(output: string): boolean {
 }
 
 /**
+ * The package a tarball URL belongs to: `…/@types/retry/-/retry-0.12.0.tgz`
+ * → `@types/retry`, `…/lodash/-/lodash-4.17.21.tgz` → `lodash`. Scoped names
+ * arrive percent-encoded often enough to be worth decoding first. `undefined`
+ * when the URL is not a tarball path, so the caller keeps the segment it had.
+ */
+function tarballOwner(output: string): string | undefined {
+  const url = /GET\s+(\S+)/.exec(output)?.[1]
+  if (url === undefined) return undefined
+  const marker = url.replace(/%2[Ff]/g, '/').indexOf('/-/')
+  if (marker === -1) return undefined
+  // The segment before `/-/` is the name; the one before THAT is the scope
+  // only when it starts with `@` — which is what keeps a registry mounted
+  // under a path prefix (`…/api/npm/npm-remote/lodash/-/…`) from being read
+  // as `npm-remote/lodash`.
+  const segments = url.replace(/%2[Ff]/g, '/').slice(0, marker).split('/').filter(Boolean)
+  const name = segments.at(-1)
+  if (name === undefined) return undefined
+  const scope = segments.at(-2)
+  return scope !== undefined && scope.startsWith('@') ? `${scope}/${name}` : name
+}
+
+/**
  * pnpm's per-request fetch timeout: the abort surfaces as a DOMException
  * ("The operation was aborted due to timeout", code 23) through undici —
  * pnpm logs it as `GET … error (23)` before giving up. This is the failure
@@ -483,8 +505,15 @@ export function classifyPnpmFailure(output: string, exitCode?: number | null): P
   // blocks all later installs, of anything.
   if (output.includes('ERR_PNPM_FETCH_404')) {
     const pkg = /GET\s+\S*\/([^/\s]+):/.exec(output)?.[1].replace(/%2[Ff]/g, '/')
-    const zh = pkg === undefined ? '' : `（${pkg}）`
-    const en = pkg === undefined ? '' : ` (${pkg})`
+    // The URL is either the package itself (`…/@types/retry`) or its tarball
+    // (`…/@types/retry/-/retry-0.12.0.tgz`). `pkg` stays the last path segment
+    // either way — the install route compares it against the tarball name to
+    // tell "this mirror has not synced that release" from a ghost entry — but
+    // a `.tgz` file name is not something the user can look up in their
+    // package.json, so the sentence names the package in the path above it.
+    const shown = pkg === undefined || !/\.tgz$/u.test(pkg) ? pkg : tarballOwner(output) ?? pkg
+    const zh = shown === undefined ? '' : `（${shown}）`
+    const en = shown === undefined ? '' : ` (${shown})`
     return {
       code: 'fetch-404',
       recoverable: false,

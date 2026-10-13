@@ -429,6 +429,31 @@ function failedOnBlockedBuilds(result: { exitCode: number | null; stdout: string
 }
 
 /**
+ * The classifier's own sentence for a plain pnpm failure (#848).
+ *
+ * Both routes recognized failures only through the branches that DO something
+ * with them — a held release, a blocked build, a broken entry, a rename — and
+ * every other recognized failure had its message computed and then dropped on
+ * the floor. The client's fallback is the tail of pnpm's own output, so an
+ * expired `patchedDependencies` key (`ERR_PNPM_UNUSED_PATCH`) reached the user
+ * as a truncated Node stack while the one actionable sentence — which pnpm
+ * explained, in both languages, one call away — appeared only in the market's
+ * log. The reporter's guess was that install was wired and update was not; both
+ * routes were missing it, which is why this is a shared last resort rather than
+ * a branch in one of them.
+ *
+ * Blocked builds are the exception: their UI is the approve-and-retry banner,
+ * which names the action, and a second sentence beside that button says the
+ * same thing in different words (#754).
+ */
+function pnpmFailureMessage(result: { exitCode: number | null; stdout: string; stderr: string }): string | undefined {
+  const failure = classifyPnpmFailure(`${result.stderr}\n${result.stdout}`, result.exitCode)
+  if (failure === null) return undefined
+  if (failure.code === 'ignored-builds' || failure.code === 'git-prepare-not-allowed') return undefined
+  return failure.message
+}
+
+/**
  * Register the market's HTTP routes.
  * @param host - Acquired webServer + shell services.
  * @param config - Validated market configuration.
@@ -4963,7 +4988,10 @@ sendJson(response, 200, { updates })
               renamedTo: renamedTo ?? undefined,
               removedDeclaration: removedDeclaration ?? undefined,
               ...(droppedBundles.length > 0 ? { droppedBundles } : {}),
-              error: versionFailureError ?? renamedError ?? trialError ?? brokenEntryError ?? hardFailureRollbackError ?? staleError ?? undefined,
+              // Last, so the specific ones above keep the floor they had: this
+              // only fills the case where every named branch said nothing and
+              // the user would otherwise get pnpm's stack (#848).
+              error: versionFailureError ?? renamedError ?? trialError ?? brokenEntryError ?? hardFailureRollbackError ?? staleError ?? pnpmFailureMessage(result) ?? undefined,
               exitCode: result.exitCode,
               timedOut: result.timedOut,
               stdout: result.stdout,
@@ -5755,6 +5783,10 @@ sendJson(response, 200, { updates })
               refresh: ok && hot && hadClientPart,
               partial: cancelDiff?.partial,
               changed: cancelDiff?.changed,
+              // This route had no failure sentence at all, so a recognized pnpm
+              // failure during a remove reached the client as the tail of
+              // pnpm's stack, like the update route before #848.
+              error: ok || cancelled ? undefined : pnpmFailureMessage(result),
               // The state of the package that was just removed (captured pre-op).
               activation,
               exitCode: result.exitCode,
@@ -6367,7 +6399,10 @@ sendJson(response, 200, { updates })
                   // the action on this very row, so the text can just say
                   // what to press.
                   ? `构建脚本被 pnpm 默认拦截（${ignoredBuilds.join(', ')}），点击「放行构建脚本并重试」即可放行并重装 / build scripts are blocked by pnpm by default (${ignoredBuilds.join(', ')}); use "Allow build scripts and retry" to approve and reinstall`
-                  : undefined,
+                  // Same last resort as the update route (#848), and on THIS
+                  // route too: a recognized failure like an expired
+                  // `patchedDependencies` key had no branch here either.
+                  : pnpmFailureMessage(result),
               exitCode: result.exitCode,
               timedOut: result.timedOut,
               stdout: result.stdout,

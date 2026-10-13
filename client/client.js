@@ -2630,6 +2630,27 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			}
 			return kept.join("\n").trim();
 		}
+		/**
+		* One failed operation's sentence for the user: the market's own when the
+		* route sent one, otherwise the tail of pnpm's own output.
+		*
+		* The tail is for the stack, not for our sentences (#848). A route's message
+		* is one bilingual sentence — Chinese first, then English — so keeping the
+		* last 600 characters of it kept the English and threw the Chinese away, which
+		* is the half a Chinese reader needs, and it cut the classifier's
+		* `unused-patch` sentence through the middle of its actionable clause. Every
+		* route sentence is bounded by construction; pnpm's output is not.
+		*/
+		function failureText(body, options = {}) {
+			const { tail = 600, fallback = "" } = options;
+			const field = (value) => typeof value === "string" ? value : value && typeof value.text === "string" ? value.text : value == null ? "" : JSON.stringify(value);
+			const own = field(body.error);
+			if (own !== "") return own;
+			const machine = humanOutput([field(body.stderr), field(body.stdout)].filter(Boolean).join("\n"));
+			if (machine !== "") return machine.slice(-tail);
+			const exit = field(body.exitCode);
+			return exit === "" ? fallback : `exit ${exit}`;
+		}
 		/** CJK ideographs — enough to tell a Chinese half from a Latin one. */
 		const CJK_RE = /[\u3400-\u9FFF\uF900-\uFAFF]/gu;
 		/** Count CJK code points in a string. */
@@ -9300,9 +9321,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							plugin,
 							names: blocked
 						});
-						const text = (v) => typeof v === "string" ? v : v && typeof v.text === "string" ? v.text : v == null ? "" : JSON.stringify(v);
 						const orphans = Array.isArray(body.orphanBundles) ? body.orphanBundles.map(String) : [];
-						const failure = text(body.error) || humanOutput([text(body.stderr), text(body.stdout)].filter(Boolean).join("\n")) || "exit " + body.exitCode;
+						const failure = failureText(body);
 						const staleEntry = typeof body.staleEntry === "string" ? body.staleEntry : null;
 						const detail = [
 							orphans.length > 0 ? `${t("orphanBundle")} ${orphans.join(", ")}` : null,
@@ -9311,7 +9331,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 						].filter(Boolean).join("\n");
 						setRecords((list) => patch(list, recordId, {
 							state: "failed",
-							reason: detail.trim().slice(-600),
+							reason: detail.trim().slice(0, 1200),
 							...blocked.length > 0 ? { blockedBuilds: blocked } : {}
 						}));
 						setOperationsOpen(true);
@@ -9345,8 +9365,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 						});
 						const body = await response.json();
 						if (response.status !== 200 || body.ok !== true) {
-							const text = (v) => typeof v === "string" ? v : v == null ? "" : JSON.stringify(v);
-							const detail = (text(body.error) || humanOutput(text(body.stderr)) || "error").trim().slice(-400);
+							const detail = failureText(body, {
+								tail: 400,
+								fallback: "error"
+							}).trim();
 							const reason = removed.length === 0 ? `${t("installFail")}: ${group.owner} — ${detail}` : `${t("conflictReplaceFailed")} ${removed.join(", ")} — ${detail}`;
 							setRecords((list) => patch(list, record.id, {
 								state: "failed",
@@ -9628,15 +9650,14 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							names: body.ignoredBuilds.map(String),
 							restore
 						});
-						const text = (v) => typeof v === "string" ? v : v && typeof v.text === "string" ? v.text : v == null ? "" : JSON.stringify(v);
 						const orphans = Array.isArray(body.orphanBundles) ? body.orphanBundles.map(String) : [];
-						const failure = text(body.error) || humanOutput([text(body.stderr), text(body.stdout)].filter(Boolean).join("\n")) || "exit " + body.exitCode;
+						const failure = failureText(body);
 						const staleEntry = typeof body.staleEntry === "string" ? body.staleEntry : null;
 						const clipped = [
 							orphans.length > 0 ? `${t("orphanBundle")} ${orphans.join(", ")}` : null,
 							staleEntry,
 							failure
-						].filter(Boolean).join("\n").trim().slice(-600);
+						].filter(Boolean).join("\n").trim().slice(0, 1200);
 						setRecords((list) => patch(list, updateRecordId, {
 							state: "failed",
 							reason: clipped
@@ -10152,8 +10173,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							setInstallError(t("reconciledNote"));
 							return;
 						}
-						const text = (v) => typeof v === "string" ? v : v && typeof v.text === "string" ? v.text : v == null ? "" : JSON.stringify(v);
-						setInstallError((text(body.error) || humanOutput(text(body.stderr)) || "error").trim().slice(-600));
+						setInstallError(failureText(body, { fallback: "error" }).trim());
 					}
 				}).catch((error) => setInstallError(String(error))).finally(() => setRemovingName(null));
 			}, [

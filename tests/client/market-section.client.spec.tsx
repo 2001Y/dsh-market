@@ -1590,6 +1590,37 @@ describe('MarketSection (jsdom)', () => {
     expect(banner.textContent).toContain('dsh-loop')
   })
 
+  it('shows the route\'s sentence whole — the old 600-character tail cut its Chinese half off (#848)', async () => {
+    // The market writes its diagnosis as one bilingual sentence: Chinese
+    // first, then English. The row kept the LAST 600 characters of what it
+    // had, so a message longer than that arrived as its English tail with the
+    // half a Chinese reader needs already gone — for the classifier's
+    // `unused-patch` sentence (771 characters) the Chinese was cut inside its
+    // first clause, and with it the two ways out.
+    // Referentially stable, like LOCALE_SNAPSHOT: useSyncExternalStore reads a
+    // fresh object as a change on every render and loops until React throws.
+    const ZH = { active: 'zh' }
+    const message = 'profile 里的 pnpm 补丁有一条已经用不上了（dsh-loop@1.1.0）：patchedDependencies 是按「包名@精确版本」钉的，而这次要装的版本已经越过它，pnpm 12 因此判定整条命令失败——它什么都没写，所以看起来像「点了更新没反应」。要么把补丁更新到新版本、并把 profile package.json 里 pnpm.patchedDependencies 的键改成「包名@新版本」，要么在新版本已经自带这个修复时直接删掉这一条和对应的补丁文件 / a pnpm patch in this profile is no longer used (dsh-loop@1.1.0): patchedDependencies keys on "package@exactVersion", and the version being installed has moved past that key, so pnpm 12 fails the WHOLE command and writes nothing at all — which is why the update looks like it simply did not apply. Either retarget the patch to the new version and change its pnpm.patchedDependencies key in the profile\'s package.json to "package@newVersion", or — when the new release already carries that fix — drop the entry and its patch file'
+    // Meaningful only while the message is longer than the window that used to
+    // clip it: shorten the fixture and this test stops testing anything.
+    expect(message.length).toBeGreaterThan(600)
+    stubFetch({
+      '/dsh-market/installed': { profile: 'web', installed: { 'dsh-loop': '^1.0.0' }, live: [] },
+      '/dsh-market/updates': { updates: { 'dsh-loop': { kind: 'npm', current: '1.0.0', latest: '1.2.0', updateAvailable: true } } },
+      '/dsh-market/update': { ok: false, error: message, stderr: 'ERR_PNPM_UNUSED_PATCH\n    at resolveDependencies2 (pnpm.mjs:177458:5)' },
+    })
+    render(<MarketSection {...props()} locale={{ subscribe: () => () => {}, getSnapshot: () => ZH }} />)
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    fireEvent.click(await screen.findByRole('button', { name: en.update }))
+
+    // The opening clause AND the clause that says what to do: a tail clip kept
+    // neither, and the row must not fall back to pnpm's stack either.
+    const shown = await screen.findByText(/pnpm 补丁有一条已经用不上了/)
+    expect(shown.textContent).toContain('直接删掉这一条和对应的补丁文件')
+    expect(shown.textContent).not.toContain('resolveDependencies2')
+  })
+
   it('a busy-agent update response queues instead of naming the running agent', async () => {
     // Queue-era: a 409 agentsBusy update becomes a `queued` record the drain
     // runs when agents go idle — the old "names the agent in a failure" copy
