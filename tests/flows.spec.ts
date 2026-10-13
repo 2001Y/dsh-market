@@ -4416,6 +4416,76 @@ describe('update flow — no npm publishing required', () => {
     expect(repairedLock).not.toContain(NEW)
   })
 
+  it('rolls a floating github: shorthand back to the commit its lockfile already records (#851)', async () => {
+    // The report: a plugin installed as `github:owner/repo` with no `#commit`
+    // cannot be rolled back, because the commit is read from a `type: git`
+    // resolution whose remote pnpm spells `git@github.com:owner/repo.git`, and
+    // the reader keyed the spec side and the lockfile side with two different
+    // normalizations that agreed on neither shape. The market answered "cannot
+    // confirm the GitHub commit before the update" over a lockfile stating it
+    // in the same block it was reading.
+    //
+    // #195 above pins the same rollback for a spec that carries the commit
+    // itself; this is the floating spelling, where the lockfile is the only
+    // witness — and the one the reporter measured returning null for all four
+    // ways of writing the spec.
+    const OLD = 'a'.repeat(40)
+    const NEW = 'b'.repeat(40)
+    await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'dsh-loop' })
+
+    fake.repos['github:owner/dsh-loop'] = {
+      name: 'dsh-loop',
+      manifest: { dsh: {}, main: 'lib/index.js', peerDependencies: { '@deepseek-ai/dsh-settings': '^0.1.0-rc.7' } },
+      artifacts: ['lib/index.js'],
+      lockCommit: NEW,
+      byCommit: {
+        [OLD]: { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+      },
+    }
+
+    const manifest = JSON.parse(readFileSync(join(fake.profileDir, 'package.json'), 'utf8')) as Record<string, unknown>
+    // Floating: no `#commit`, which is the whole of the report.
+    manifest.dependencies = { 'dsh-loop': 'github:owner/dsh-loop' }
+    writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify(manifest))
+    const pkgDir = join(fake.profileDir, 'node_modules', 'dsh-loop')
+    mkdirSync(join(pkgDir, 'lib'), { recursive: true })
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: 'dsh-loop', version: '0.0.1', dsh: {}, main: 'lib/index.js' }))
+    writeFileSync(join(pkgDir, 'lib', 'index.js'), '')
+    const hostPeerDir = join(fake.profileDir, 'node_modules', '@deepseek-ai', 'dsh-settings')
+    mkdirSync(hostPeerDir, { recursive: true })
+    writeFileSync(join(hostPeerDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-settings', version: '0.1.0-rc.6' }))
+    // The lockfile pnpm actually writes for a `github:` install: a `type: git`
+    // resolution whose `repo:` is the SCP form, with no archive tarball for
+    // `readLockCommits` to have keyed anything by.
+    writeFileSync(
+      join(fake.profileDir, 'pnpm-lock.yaml'),
+      `lockfileVersion: 9\n  resolution: {commit: ${OLD}, repo: git@github.com:owner/dsh-loop.git, type: git}\n`,
+    )
+
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `001e# service=git-upload-pack\n00000155${NEW} HEAD\0multi_ack\n003f${NEW} refs/heads/main\n0000`,
+      { status: 200 },
+    )))
+    bed.dispose()
+    bed = createTestbed({ region: 'china' })
+
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+    expect(r.status).toBe(200)
+    // The commit is in the lockfile, so the rollback exists. This is the
+    // assertion #851 is about: before the fix this was undefined, with
+    // `rollbackUnavailable` explaining that the previous commit could not be
+    // confirmed.
+    expect(typeof r.json.compatibility?.rollbackId, 'the lockfile already records the commit').toBe('string')
+    expect(r.json.compatibility?.rollbackUnavailable).toBeUndefined()
+
+    const rollback = await bed.dispatch('POST', '/dsh-market/rollback', { rollbackId: r.json.compatibility.rollbackId })
+    expect(rollback.status).toBe(200)
+    expect(rollback.json.rolledBack).toBe(true)
+    // The declaration is floating again, pinned only for the rollback add.
+    expect(installedSpec('dsh-loop')).toBe('github:owner/dsh-loop')
+    expect(fake.calls.some(call => call.includes(`github:owner/dsh-loop#${OLD}`) && call.includes('--force'))).toBe(true)
+  })
+
   it('never offers or performs a downgrade when the latest dist-tag is older (#64 by @ZeroOrigin64)', async () => {
     // A package whose `latest` tag was left on its first release while newer
     // prereleases shipped: latest 0.0.1 is BELOW the installed 1.0.0.

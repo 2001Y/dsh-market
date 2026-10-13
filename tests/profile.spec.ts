@@ -496,20 +496,58 @@ describe('readGitResolutionCommit', () => {
     writeFileSync(join(profileDir('web'), 'pnpm-lock.yaml'), body)
   }
 
-  it('gives a host shorthand nothing rather than another repository\'s commit (#637)', () => {
+  it('reads a host shorthand the same as the URL spelling of that install (#637, #851)', () => {
     // No pnpm the market supports resolves gitlab.com / bitbucket.org by
     // cloning — 9.15.4, 10.34.5, 11.8.0 and 12.4.1 all write an archive
     // tarball, which `readLockCommits` reads — so a `type: git` entry for one
-    // of these hosts does not occur today. This pins the direction the miss
-    // takes if some future pnpm writes one: nothing, which disables rollback
-    // with a clear reason, rather than a same-named repository's commit,
-    // which would roll back to the wrong tree.
+    // of these hosts does not occur today, and this is the shape a future one
+    // would take.
+    //
+    // The answer used to depend on the SPELLING: the URL read the commit and
+    // the shorthand read nothing, because the shorthand could not be keyed at
+    // all. #851 is that defect and it is not host-specific — the shorthand is
+    // how pnpm writes a host back into the manifest, so two spellings of one
+    // install have to give one answer. What #637 protected is untouched: the
+    // key is host-qualified, so another host's same-named repository still
+    // cannot answer for this one.
     writeLock(`lockfileVersion: 9\n  resolution: {commit: ${A}, repo: https://gitlab.com/me/themer.git, type: git}\n`)
 
-    expect(readGitResolutionCommit('web', 'gitlab:me/themer')).toBeNull()
-    expect(readGitResolutionCommit('web', 'bitbucket:me/themer')).toBeNull()
-    // The URL spelling of the same install still reads, untouched by #637.
+    expect(readGitResolutionCommit('web', 'gitlab:me/themer')).toBe(A)
     expect(readGitResolutionCommit('web', 'git+https://gitlab.com/me/themer.git')).toBe(A)
+    // Another host's repository of the same name still gets nothing, which is
+    // the direction #637 asked the miss to take.
+    expect(readGitResolutionCommit('web', 'bitbucket:me/themer')).toBeNull()
+    expect(readGitResolutionCommit('web', 'github:me/themer')).toBeNull()
+  })
+
+  it('finds the commit for a floating github: shorthand pnpm resolved as type: git (#851)', () => {
+    // The reporter's lockfile in shape: pnpm writes the `github:` shorthand
+    // back into the manifest and records the resolution's remote in SCP form,
+    // so before #851 the spec side and the lockfile side of the comparison
+    // shared no spelling at all — the shorthand keyed to nothing, and the URL
+    // spelling kept a `.git` suffix the SCP side also had, in a different
+    // scheme. `hostedRepoKey` is what the rest of the market compares specs
+    // by, and is now what both sides are keyed with here too.
+    writeLock(`lockfileVersion: 9\n  resolution: {commit: ${A}, repo: git@github.com:me/themer.git, type: git}\n`)
+
+    // Every spelling of one install. The reporter measured all four of the
+    // first group returning null on 1.66.18.
+    for (const spec of [
+      'github:me/themer',
+      'github:me/themer#main',
+      'https://github.com/me/themer',
+      'https://github.com/me/themer.git',
+      'git+https://github.com/me/themer.git',
+      'git+ssh://git@github.com/me/themer.git',
+      `github:me/themer#${A}`,
+      'git@github.com:me/themer.git',
+    ]) {
+      expect(readGitResolutionCommit('web', spec), spec).toBe(A)
+    }
+    // A different repository on the same host is still a different repository.
+    expect(readGitResolutionCommit('web', 'github:me/other')).toBeNull()
+    // And so is a repository on another host.
+    expect(readGitResolutionCommit('web', 'gitlab:me/themer')).toBeNull()
   })
 
   it('reads the commit pnpm recorded for a remote, whatever the spelling', () => {
