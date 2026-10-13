@@ -10205,9 +10205,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			/**
 			* Installs wait only for the mutation lock; replacements also wait for
 			* running sessions unless the user confirms a single request. Legacy hosts
-			* can still refuse installs, so retain their queue fallback. When every operation
-			* is queued, nothing else polls /status, so this loop fetches it itself
-			* (only while a queued record exists, so an idle page makes no requests).
+			* can still refuse installs, so retain their queue fallback. When every
+			* operation is queued, nothing else polls /status, so this loop fetches it
+			* itself — but only while a queued record exists, so an idle page makes no
+			* requests.
 			* One mutation at a time — the host still serializes via its lock, and a
 			* re-refused drain simply re-queues instead of failing.
 			*/
@@ -10216,6 +10217,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				const timer = setInterval(() => {
 					if (drainingRef.current) return;
 					if (operationInFlight()) return;
+					if (!recordsRef.current.some((record) => record.state === "queued")) return;
 					fetch(api("/dsh-market/status"), { cache: "no-store" }).then((res) => res.json()).then((status) => {
 						if (disposed) return;
 						const runningAgents = Array.isArray(status.runningAgents) ? status.runningAgents.map(String) : [];

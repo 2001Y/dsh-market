@@ -4113,9 +4113,10 @@ export function MarketSection(props: MarketSectionProps) {
   /**
    * Installs wait only for the mutation lock; replacements also wait for
    * running sessions unless the user confirms a single request. Legacy hosts
-   * can still refuse installs, so retain their queue fallback. When every operation
-   * is queued, nothing else polls /status, so this loop fetches it itself
-   * (only while a queued record exists, so an idle page makes no requests).
+   * can still refuse installs, so retain their queue fallback. When every
+   * operation is queued, nothing else polls /status, so this loop fetches it
+   * itself — but only while a queued record exists, so an idle page makes no
+   * requests.
    * One mutation at a time — the host still serializes via its lock, and a
    * re-refused drain simply re-queues instead of failing.
    */
@@ -4124,6 +4125,11 @@ export function MarketSection(props: MarketSectionProps) {
     const timer = setInterval(() => {
       if (drainingRef.current) return
       if (operationInFlight()) return
+      // The sentence above is the one this loop has to keep: it fetched
+      // before asking whether anything was queued, so an open page polled
+      // /status every 2 s for as long as it stayed open, queue or no queue
+      // (#838). Ask first — with no record there is nothing to drain.
+      if (!recordsRef.current.some(record => record.state === 'queued')) return
       void fetch(api('/dsh-market/status'), { cache: 'no-store' })
         .then(res => res.json())
         .then(status => {
