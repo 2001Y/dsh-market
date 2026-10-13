@@ -862,43 +862,103 @@ export function bundlePatchInsertedIds(dir: string): string[] {
 }
 
 /**
- * `name:` and `id:` rows of the package's declared bundle patch. Line-wise
- * on purpose: the strict hot-mount parser rejects config/expression rows,
- * but for "what does this bundle bring in" any row counts. `insertedIds` is
- * the subset nested under an `insert:` key (#147).
- */
-/**
  * Rows of one patch file. Exported because a package may ship its patch at
  * the conventional path INSTEAD of declaring `dsh.bundle.patch`, and the
  * patch layer has to read that one by the same rules — a second hand-rolled
  * scan drifted from this one and re-introduced #147 on that path (it closed
  * the insert block only on `id:` lines, so `- disable:` followed by nested
  * ids claimed the neighbour's rows).
+ *
+ * Line-wise on purpose: the strict hot-mount parser rejects config/expression
+ * rows, but for "what does this bundle bring in" any row counts. `insertedIds`
+ * is the subset under an `insert:` key (#147) — and "under `insert:`" is not
+ * the same as "deeper than it", because a row's `config:` carries its payload
+ * (#841).
  */
 export function parsePatchRows(text: string): { names: string[]; ids: string[]; insertedIds: string[] } {
   const names: string[] = []
   const ids: string[] = []
   const insertedIds: string[] = []
   {
-    // `insert:` opens a nested list; every id below it, at deeper
-    // indentation, is a row this package brings in. A row at or above the
-    // `insert:` indentation closes the block — those target OTHER plugins.
-    let insertIndent: number | null = null
     // CRLF too, for consistency with the hot-mount parser, which a
     // Windows-authored patch genuinely broke. Here it changes no outcome
     // today — every row pattern below is `^`-anchored and a comment line
     // always starts with `#`, so an unstripped comment matches nothing —
     // and it is deliberately NOT covered by a spec, because a test that
     // passes with or without the change tests nothing.
+    const rows: { line: string; trimmed: string; indent: number }[] = []
     for (const raw of text.split(/\r?\n/)) {
       const line = raw.replace(/#.*$/, '')
       if (line.trim() === '') continue
-      const indent = line.length - line.trimStart().length
+      rows.push({ line, trimmed: line.trim(), indent: line.length - line.trimStart().length })
+    }
+    // `insert:` opens a nested list; every id below it, at deeper
+    // indentation, is a row this package brings in. A row at or above the
+    // `insert:` indentation closes the block — those target OTHER plugins.
+    let insertIndent: number | null = null
+    // Indent of a `config:` key whose value is payload, not more rows.
+    // Everything deeper than it is data, and its `id:` keys live in another
+    // namespace (#841): a preset row writes `config.plugins[].id` for the
+    // entries it will instantiate, so two bundles that instantiate the same
+    // official plugins read as two bundles inserting the same entry ids —
+    // and the market uninstalled the newcomer over a clash the host does
+    // not have.
+    let payloadIndent: number | null = null
+    /** Index of the `- ` line that opens the row holding `from`. */
+    const rowStart = (from: number): number => {
+      const isRowStart = (index: number): boolean =>
+        /^-\s/u.test(rows[index].trimmed) || rows[index].trimmed === '-'
+      if (isRowStart(from)) return from
+      for (let j = from - 1; j >= 0; j--) {
+        if (isRowStart(j)) return j
+      }
+      return 0
+    }
+    /**
+     * Whether the insert row holding the `config:` at `from` declares
+     * `group: true`. YAML gives a mapping's keys no order, so this reads the
+     * whole row — its own `- ` marker plus the key lines at the marker's body
+     * indentation — rather than only what happened to be written above.
+     */
+    const rowDeclaresGroup = (from: number): boolean => {
+      const start = rowStart(from)
+      const markerIndent = rows[start].indent
+      for (let j = start; j < rows.length; j++) {
+        const row = rows[j]
+        if (j > start && row.indent <= markerIndent) break
+        // The row's own keys; a config body sits deeper than these.
+        if (j > start && row.indent !== markerIndent + 2) continue
+        if (/^\s*-?\s*group:\s*['"]?true['"]?\s*$/u.test(row.line)) return true
+      }
+      return false
+    }
+    /** Whether the key at `keyIndent` holds a block sequence. */
+    const valueIsList = (from: number, keyIndent: number): boolean => {
+      for (let j = from + 1; j < rows.length; j++) {
+        if (rows[j].indent <= keyIndent) return false
+        return rows[j].trimmed === '-' || rows[j].trimmed.startsWith('- ')
+      }
+      return false
+    }
+    for (let i = 0; i < rows.length; i++) {
+      const { line, trimmed, indent } = rows[i]
+      if (payloadIndent !== null && indent <= payloadIndent) payloadIndent = null
       if (insertIndent !== null && indent <= insertIndent && !/^\s*-?\s*(id|name|config):/u.test(line)) {
         insertIndent = null
       }
       if (/^\s*-?\s*insert:\s*$/u.test(line)) {
         insertIndent = indent
+        payloadIndent = null
+        continue
+      }
+      // Exactly one `config:` shape carries loader rows: a `group: true` row
+      // whose config is a LIST, because its children are entries. That is
+      // the rule userPatchPackageReferences has always applied to this same
+      // shape — a plain plugin may use a list of `{ name: … }` as ordinary
+      // options, and those must stay payload. Anything else here is payload
+      // too, so the block is skipped rather than counted.
+      if (insertIndent !== null && indent > insertIndent && /^\s*-?\s*config:\s*$/u.test(line)) {
+        if (!(rowDeclaresGroup(i) && valueIsList(i, indent))) payloadIndent = indent
         continue
       }
       const name = /^\s*-?\s*name:\s*['"]?([^'"\s]+)/.exec(line)
@@ -909,7 +969,7 @@ export function parsePatchRows(text: string): { names: string[]; ids: string[]; 
         // A top-level `- id:` row closes any open insert block: it is a
         // sibling of `- insert:`, not a member of it.
         if (insertIndent !== null && indent > insertIndent) {
-          if (!insertedIds.includes(id[1])) insertedIds.push(id[1])
+          if (payloadIndent === null && !insertedIds.includes(id[1])) insertedIds.push(id[1])
         } else if (indent <= (insertIndent ?? -1)) {
           insertIndent = null
         }
