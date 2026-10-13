@@ -56,7 +56,7 @@ import { readJsonBody, refuseUnadmitted, sameOrigin, sendJson } from './http.ts'
 import { resolveDshHome } from './home-paths.ts'
 import { detectedDebugger, detectedSupervisor, restartAllowed, scheduleRestart, servingPort, trustedRestartRequest, trustedDownloadRequest, type RecoveryHandoffConfig, restartReachableFrom } from './restart.ts'
 import type { RecoveryPlugin } from './recovery.ts'
-import { activationAfterReplace, brokenClientBundles, bundlePatchIsEmpty, checkClientBundle, defaultHostRuntimeFacts, hasHostHalf, hostPeerGate, newlyBrokenBundles, peerGateRemedy, verifyActivation } from './verify.ts'
+import { activationAfterReplace, brokenClientBundles, bundlePatchIsEmpty, checkClientBundle, defaultHostRuntimeFacts, findUnservedConfigNamespaces, hasHostHalf, hostPeerGate, newlyBrokenBundles, peerGateRemedy, verifyActivation } from './verify.ts'
 import {
   carrierDisableIds, disableRow, enableRow, findUserPatchPath, foreignRowIds, isProtectedModule, packagePatchFlags,
   readUserPatchState, removeRowBlocks, rowIdsForPackage, userPatchPackageReferences,
@@ -2656,6 +2656,37 @@ export function mountMarketRoutes(
           packageName,
           manifest,
         })))
+        // #810: a client that reads its config from a name no loader entry
+        // answers to reads NOTHING — blank or unwritable settings, and in the
+        // reported case a panel stuck on a hardcoded fallback port — with no
+        // error anywhere. Judged against everything this profile can be seen
+        // to serve: each installed package's own patch rows (read once, for
+        // the set AND for the "write this instead" value), the user patch's
+        // rows — its inserts, plus the disables and force-enables, which both
+        // name existing entry ids — and whatever the loader is running now.
+        //
+        // The gap: host-layer ids the market never reads a patch for. A plugin
+        // reading a HOST entry's config by literal would be flagged wrongly
+        // here, where the diagnostics page — which composes the host layers
+        // too — can settle that difference.
+        const ownEntryIds = new Map(Object.keys(installed).map(
+          packageName => [packageName, bundlePatchInsertedIds(join(activeProfileDir, 'node_modules', packageName))] as const,
+        ))
+        const servedEntryIds = new Set<string>([...patch.inserts, ...patch.disables, ...patch.forced])
+        for (const ids of ownEntryIds.values()) for (const id of ids) servedEntryIds.add(id)
+        for (const entry of host.loader.entries()) {
+          const id = entry.options?.id
+          if (id === undefined || id === '') continue
+          servedEntryIds.add(id)
+          const bare = id.split(':').pop()
+          if (bare !== undefined) servedEntryIds.add(bare)
+        }
+        const configNamespaces = findUnservedConfigNamespaces(
+          activeProfileDir,
+          servedEntryIds,
+          name => ownEntryIds.get(name) ?? [],
+          activeProfileDir,
+        )
         sendJson(response, 200, {
           profile: config.profile,
           installed,
@@ -2683,6 +2714,9 @@ export function mountMarketRoutes(
           brokenPlugins: marketState.brokenPlugins ?? {},
           patchForced: patchFlags.forced,
           bundles: readProfileBundles(activeProfileDir).filter(name => !INBOX_BUNDLES.has(name)),
+          // Only packages with a finding appear, so a healthy profile sends
+          // nothing and the row renders nothing.
+          configNamespaces: configNamespaces.length > 0 ? configNamespaces : undefined,
         })
       },
     }),
@@ -2708,7 +2742,25 @@ export function mountMarketRoutes(
               ? classifyPeer(row.plugin, row.name, row.range, row.resolved, row.optional === true)
               : { kind: 'none' }
           }
-          sendJson(response, 200, report)
+          // #810: a client that reads its config from a name no loader entry
+          // answers to. Attached here rather than computed inside
+          // `analyzeProfile` because that function is documented as safe on
+          // every market open and this reads one bundle per installed plugin —
+          // the diagnostics page is a page the user opened on purpose.
+          //
+          // Judged against the COMPOSITION's ids, not the package's own: a
+          // package may mount another one (carrier form), and judging by own
+          // ids would flag it.
+          const served = new Set(report.rows.map(row => row.id))
+          sendJson(response, 200, {
+            ...report,
+            configNamespaces: findUnservedConfigNamespaces(
+              activeProfileDir,
+              served,
+              name => report.rows.filter(row => row.layer === name).map(row => row.id),
+              activeProfileDir,
+            ),
+          })
         } catch (error) {
           sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
         }

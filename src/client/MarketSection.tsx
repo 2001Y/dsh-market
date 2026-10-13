@@ -2207,6 +2207,12 @@ export function MarketSection(props: MarketSectionProps) {
   )
   /** Non-live activation results from the last operation, shown as a banner. */
   const [activationWarnings, setActivationWarnings] = useState<{ name: string; info: ActivationInfo }[]>([])
+  /**
+   * Installed plugins whose client asks for a config namespace nothing serves
+   * (#810). Server-computed, because the answer needs one client bundle read
+   * per plugin and the client cannot see a bundle's contents.
+   */
+  const [configNamespaceIssues, setConfigNamespaceIssues] = useState<Array<{ name: string; namespaces: string[]; ownEntryIds: string[] }>>([])
   const [hostDependencyFindings, setHostDependencyFindings] = useState<SharedHostPackageDependencyFinding[]>([])
   /** Plugin name awaiting uninstall confirmation (Modal). */
   const [removeConfirm, setRemoveConfirm] = useState<string | null>(null)
@@ -2398,6 +2404,12 @@ export function MarketSection(props: MarketSectionProps) {
         }
         if (Array.isArray(body.patchDisabled)) setPatchDisabledNames(body.patchDisabled)
         if (Array.isArray(body.unbundled)) setUnbundledNames(body.unbundled)
+        setConfigNamespaceIssues(Array.isArray(body.configNamespaces)
+          ? body.configNamespaces.filter((item: unknown): item is { name: string; namespaces: string[]; ownEntryIds: string[] } =>
+              typeof item === 'object' && item !== null
+              && typeof (item as { name?: unknown }).name === 'string'
+              && Array.isArray((item as { namespaces?: unknown }).namespaces))
+          : [])
         if (body.groups && typeof body.groups === 'object') setGroups(body.groups)
         if (Array.isArray(body.groupOrder)) setGroupOrder(body.groupOrder)
         if (Array.isArray(body.favorites)) setFavoriteUrls(body.favorites.filter((url: unknown): url is string => typeof url === 'string'))
@@ -5801,6 +5813,21 @@ export function MarketSection(props: MarketSectionProps) {
                 <div key={name}>
                   <b>{name}</b> — {activationMeta(info.state, t, info.dependencyOf, info.loadedByProfile).label}
                   {info.reasons.length > 0 && <span className={css.spec}>（{localizeBilingualList(info.reasons, lang)}）</span>}
+                </div>
+              ))}
+            </span>
+          </div>
+        )}
+        {tab === 'installed' && configNamespaceIssues.length > 0 && (
+          <div className={css.banner}>
+            <IconWarningOutline16 size={14} className={css.bannerIcon} />
+            <span className={css.grow}>
+              {configNamespaceIssues.map(finding => (
+                <div key={finding.name}>
+                  {t('configNamespaceNotice')
+                    .replace('{0}', finding.name)
+                    .replace('{1}', finding.namespaces.join('、'))
+                    .replace('{2}', finding.ownEntryIds.join('、') || '—')}
                 </div>
               ))}
             </span>

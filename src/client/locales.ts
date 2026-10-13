@@ -497,6 +497,7 @@ export const zh = {
   // A plugin the market had to stop declaring (#663). Plain about what
   // happened, because the user's plugin is simply gone from the list and
   // nothing else in the UI can explain that.
+  configNamespaceNotice: '{0} 的设置面板读不到配置：它按「{1}」读取，而这个环境里没有这个名字的条目 id。它自己的条目是「{2}」，插件客户端应该改成读那个——这是插件自身的问题，市场无法代改。',
   brokenPluginTitle: '{0} 更新失败后被移除了',
   brokenPluginBody: 'DSH 正在运行时无法更新，而更新前的版本也已经损坏。为避免下次启动卡住，市场把它从 profile 里移除。插件目录还在原处，退出 DSH 后重新安装即可。',
   brokenPluginTitleCancelled: '{0} 取消更新后被移除了',
@@ -603,6 +604,12 @@ export const zh = {
   checkResidualsHint: '这些目录不被任何插件使用，也不影响启动，是更新中断后留下的。退出 DSH 后可以删除，或重新安装对应的插件。',
   checkResidualTmp: 'pnpm 临时目录',
   checkResidualIncomplete: '残缺的包目录（缺少 package.json）',
+  checkConfigNamespaces: '设置面板读不到配置的插件',
+  checkConfigNamespacesEmpty: '没有发现这类插件。',
+  checkConfigNamespacesHint: '插件面板按「条目 id」读自己的配置，写错名字不会报错，只会静默读不到值：面板空白、存不进去，插件会退回它写死的默认值（画布类插件因此白屏）。这是插件客户端里的名字写错了，市场改不了它，需要插件作者改一行代码。',
+  checkConfigNamespaceRow: '它按「{0}」读配置，但这不是任何条目 id',
+  checkConfigNamespaceOwn: '它自己的条目 id',
+  checkConfigNamespaceNone: '它自己没有声明任何条目 id',
   checkOrphans: '无效的配置条目',
   checkOrphansEmpty: '没有无效配置条目',
   // Orphan patch reason → badge label (issue #98 supplement).
@@ -1217,6 +1224,7 @@ export const en: Record<MarketKey, string> = {
   toggleFail: 'Toggle failed',
   deprecatedBadge: 'Deprecated',
   deprecatedWarn: 'This plugin is marked as deprecated by the catalog; new users are advised against installing it.',
+  configNamespaceNotice: '{0}\'s settings panel cannot read its config: it asks for "{1}", and no entry id in this environment has that name. Its own entry is "{2}", which is what the plugin\'s client should ask for — the mistake is in the plugin, and the market cannot change it.',
   brokenPluginTitle: '{0} was removed after a failed update',
   brokenPluginBody: 'The running DSH blocked the update, and the version it was replacing was already damaged. The market removed it from the profile so the next start does not fail. Its directory is untouched — quit DSH and install it again.',
   brokenPluginTitleCancelled: '{0} was removed after an update was cancelled',
@@ -1323,6 +1331,12 @@ export const en: Record<MarketKey, string> = {
   checkResidualsHint: 'No plugin uses these directories and they do not stop DSH from starting: an interrupted update left them behind. Quit DSH, then delete them or reinstall the affected plugin.',
   checkResidualTmp: 'pnpm temp directory',
   checkResidualIncomplete: 'incomplete package (no package.json)',
+  checkConfigNamespaces: 'Plugins whose settings read the wrong name',
+  checkConfigNamespacesEmpty: 'No plugin does this.',
+  checkConfigNamespacesHint: 'A plugin panel reads its own config by ENTRY ID. A wrong name there reports nothing: the panel is blank and cannot save, and the plugin falls back to whatever default it hardcoded (a canvas panel shows a white screen). The name is wrong inside the plugin\'s own client bundle — the market cannot fix it, its author has to change one line.',
+  checkConfigNamespaceRow: 'it reads its config from "{0}", which is not an entry id',
+  checkConfigNamespaceOwn: 'its own entry id',
+  checkConfigNamespaceNone: 'it declares no entry id of its own',
   checkOrphans: 'Invalid config entries',
   checkOrphansEmpty: 'No invalid config entries',
   // Orphan patch reason → badge label (issue #98 supplement).

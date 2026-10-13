@@ -4092,6 +4092,48 @@ describe('installed masonry layout (#273)', () => {
   })
 })
 
+describe('a plugin whose settings read a name nothing serves (#810)', () => {
+  // The reported shape: `dsh-comfyui-canvas`'s client asks its config from
+  // "dsh-comfyui-canvas" while its own entry id is "comfyui-canvas", so its
+  // settings read nothing and its panel falls back to a hardcoded port. The
+  // row has to carry both halves — what it asks for, and what it should.
+  const installed = {
+    profile: 'web', installed: { 'dsh-comfyui-canvas': '^0.1.13' }, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [],
+    configNamespaces: [{
+      name: 'dsh-comfyui-canvas',
+      namespaces: ['dsh-comfyui-canvas'],
+      ownEntryIds: ['comfyui-canvas'],
+    }],
+  }
+
+  it('names the mistake and the value to write instead', async () => {
+    stubFetch({ '/dsh-market/installed': installed })
+
+    render(<MarketSection {...props()} preferredSubsectionId="installed" />)
+
+    // Found by its own sentence: the package name alone is on the row below
+    // this banner too, which is why the assertion cannot key on it.
+    const notice = await screen.findByText(/cannot read its config/)
+    expect(notice.textContent).toContain('dsh-comfyui-canvas')
+    expect(notice.textContent).toContain('comfyui-canvas')
+    // The consequence and whose problem it is, not just the fact: a user who
+    // cannot tell "the plugin is broken" from "DSH is broken" is stuck.
+    expect(notice.textContent).toContain('cannot read its config')
+    expect(notice.textContent).toContain('the market cannot change it')
+  })
+
+  it('says nothing at all when no plugin has the problem', async () => {
+    stubFetch({
+      '/dsh-market/installed': { ...installed, configNamespaces: undefined },
+    })
+
+    render(<MarketSection {...props()} preferredSubsectionId="installed" />)
+
+    await screen.findByText('dsh-comfyui-canvas')
+    expect(screen.queryByText(new RegExp(re('cannot read its config').source))).toBeNull()
+  })
+})
+
 describe('a plugin the market had to stop declaring (#663)', () => {
   // The plugin is NOT in `installed` — that is the whole point: the
   // declaration is gone, so nothing else in the UI can explain it.

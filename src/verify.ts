@@ -616,6 +616,129 @@ export interface BundleCheck {
 }
 
 /**
+ * One assignment of a string literal to a name, and the `configForms.get`
+ * call sites (#810).
+ *
+ * The namespace a client asks its config from is a PROFILE ENTRY ID, not a
+ * package name. A client that writes the package name reads nothing: the
+ * settings document has no entry under it, the call returns empty, and the
+ * plugin degrades silently — blank or unwritable settings forms, and in the
+ * reported case a panel stuck on a hardcoded fallback port. Nothing logs it,
+ * and nothing on the market side noticed.
+ *
+ * `configForms.get` is matched by name, so an aliased receiver
+ * (`const forms = ctx.configForms; forms.get("x")`) is not seen — the same
+ * honesty as the syntax check above: this reports what it can prove, and
+ * says nothing otherwise.
+ */
+const STRING_ASSIGNMENT = /(?:^|[^\w$.])(?:var|let|const)?\s*([A-Za-z_$][\w$]*)\s*=\s*(['"])([^'"\\\n]*)\2/gu
+const CONFIG_FORMS_GET = /configForms\s*\.\s*get\s*\(\s*(?:([A-Za-z_$][\w$]*)|(['"])([^'"\\\n]*)\2)\s*\)/gu
+
+/** A value that is a plain loader entry id: a backslash means it is not one. */
+function plainNamespace(value: string): string | null {
+  return value !== '' && value.length <= 200 && !value.includes('\\') && /^[\w@/.:-]+$/u.test(value) ? value : null
+}
+
+/**
+ * Every namespace a client bundle asks its config from (#810).
+ *
+ * One level of constant propagation, as asked for in the report: the plugin
+ * that started this writes `var NAMESPACE = "dsh-comfyui-canvas"` and calls
+ * `configForms.get(NAMESPACE)`, so a literal-only scan would miss the very
+ * case the check exists for. A name assigned twice is dropped rather than
+ * guessed at — which value it holds at the call site is not decidable from
+ * text alone, and a wrong guess here would be reported as a plugin defect.
+ */
+export function configFormNamespaces(source: string): string[] {
+  // Measured on a 750KB bundle: these scans cost ~9ms, because both walk
+  // every character, and this runs on a request the market polls. Almost no
+  // client mentions configForms at all, and — an order of magnitude rarer —
+  // almost none of those calls a method on it: for both, this pair of plain
+  // substring searches IS the whole cost (0.23ms measured), and only a client
+  // that actually asks for a config pays for a scan.
+  if (!source.includes('configForms') || !source.includes('configForms.get')) return []
+  const constants = new Map<string, string | null>()
+  for (const match of source.matchAll(STRING_ASSIGNMENT)) {
+    const name = match[1]!
+    const value = plainNamespace(match[3]!)
+    constants.set(name, constants.has(name) || value === null ? null : value)
+  }
+  const namespaces = new Set<string>()
+  for (const match of source.matchAll(CONFIG_FORMS_GET)) {
+    // A namespace is a loader entry id: no escapes, no whitespace runs, no
+    // arbitrary length. Anything else is not this pattern and stays out.
+    const value = plainNamespace(match[3] ?? '') ?? constants.get(match[1]!) ?? null
+    if (value !== null) namespaces.add(value)
+  }
+  return [...namespaces]
+}
+
+/** A package whose client asks for a namespace nothing in the composition serves (#810). */
+export interface UnservedConfigNamespace {
+  /** The installed package whose client bundle asks. */
+  name: string
+  /** The namespaces it asks for that no loader entry id answers to. */
+  namespaces: string[]
+  /** Entry ids this package's own patch declares — the value it meant. */
+  ownEntryIds: string[]
+}
+
+/** The client bundle of an installed package, read; null when it has none to read. */
+function readClientBundle(profile: string, name: string, explicitDir?: string): string | null {
+  const root = join(profileDir(profile, explicitDir), 'node_modules', name)
+  let manifest: { dsh?: { client?: unknown }; exports?: unknown }
+  try {
+    manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as typeof manifest
+  } catch {
+    return null
+  }
+  if (manifest.dsh?.client === undefined) return null
+  const exportsField = manifest.exports
+  const relative = exportsField !== null && typeof exportsField === 'object' && !Array.isArray(exportsField)
+    ? clientBundlePath((exportsField as Record<string, unknown>)['./client'])
+    : null
+  if (relative === null) return null
+  try {
+    return readFileSync(join(root, relative), 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Installed plugins whose client reads its config from a name nothing serves
+ * (#810).
+ *
+ * `served` is the entry id set of the WHOLE composition — deliberately not
+ * this package's own ids: a package may legitimately mount another one
+ * (carrier form), and judging by own ids alone would flag those. `ownIdsOf`
+ * answers what the package itself declares, which is the value to write
+ * instead — the report asked for the correct spelling to be shown, not just
+ * the mistake.
+ *
+ * The scan reads one bundle per installed plugin. Measured against the same
+ * cost the syntax sweep above already pays (0.40ms per plugin on a 385KB
+ * bundle), so a 30-plugin profile is ~12ms — this runs on a request a user
+ * made, not in a loop.
+ */
+export function findUnservedConfigNamespaces(
+  profile: string,
+  served: ReadonlySet<string>,
+  ownIdsOf: (name: string) => string[],
+  explicitDir?: string,
+): UnservedConfigNamespace[] {
+  const found: UnservedConfigNamespace[] = []
+  for (const name of Object.keys(readInstalled(profile, explicitDir))) {
+    const source = readClientBundle(profile, name, explicitDir)
+    if (source === null) continue
+    const unserved = configFormNamespaces(source).filter(namespace => !served.has(namespace))
+    if (unserved.length === 0) continue
+    found.push({ name, namespaces: unserved, ownEntryIds: ownIdsOf(name) })
+  }
+  return found
+}
+
+/**
  * Whether a package's client bundle still parses as JavaScript (#222).
  *
  * pnpm can leave a half-written or patch-mangled bundle behind — the report
@@ -686,30 +809,14 @@ export function newlyBrokenBundles(
 }
 
 export function checkClientBundle(profile: string, name: string, explicitDir?: string): BundleCheck {
-  const root = join(profileDir(profile, explicitDir), 'node_modules', name)
-  let manifest: { dsh?: { client?: unknown }; exports?: unknown }
+  // Declared but absent is verifyActivation's territory (a missing entry
+  // artifact is already `broken` there); duplicating it here would report one
+  // problem twice in two different vocabularies — so the reader's null covers
+  // both "no client bundle" and "declared but unreadable" with the same ok.
+  const source = readClientBundle(profile, name, explicitDir)
+  if (source === null) return { ok: true, reason: null }
   try {
-    manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as typeof manifest
-  } catch {
-    return { ok: true, reason: null }
-  }
-  if (manifest.dsh?.client === undefined) return { ok: true, reason: null }
-  const exportsField = manifest.exports
-  const relative = exportsField !== null && typeof exportsField === 'object' && !Array.isArray(exportsField)
-    ? clientBundlePath((exportsField as Record<string, unknown>)['./client'])
-    : null
-  if (relative === null) return { ok: true, reason: null }
-  let source: string
-  try {
-    source = readFileSync(join(root, relative), 'utf8')
-  } catch {
-    // Declared but absent is verifyActivation's territory (a missing entry
-    // artifact is already `broken` there); duplicating it here would report
-    // one problem twice in two different vocabularies.
-    return { ok: true, reason: null }
-  }
-  try {
-    new Script(source, { filename: relative })
+    new Script(source, { filename: `${name}/client` })
     return { ok: true, reason: null }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)

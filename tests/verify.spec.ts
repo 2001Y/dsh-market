@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { profileDir } from '../src/profile.ts'
-import { brokenClientBundles, checkClientBundle, clientBundlePath, hostPeerGate, newlyBrokenBundles, verifyActivation } from '../src/verify.ts'
+import { brokenClientBundles, checkClientBundle, clientBundlePath, configFormNamespaces, findUnservedConfigNamespaces, hostPeerGate, newlyBrokenBundles, verifyActivation } from '../src/verify.ts'
 
 let home: string
 beforeEach(() => {
@@ -658,5 +658,94 @@ describe('a bundle whose own patch is empty (#813)', () => {
       'lib/index.js': '',
     })
     expect(verifyActivation('web', 'some-plugin', new Set())).toMatchObject({ state: 'restart' })
+  })
+})
+
+describe('config namespaces a client asks for (#810)', () => {
+  const clientManifest = { name: 'p', main: 'lib/index.js', exports: { './client': './lib/client.js' }, dsh: { client: { platform: 'web' } } }
+  /** `readInstalled` reads the profile manifest, so the package has to be declared. */
+  function declaredProfile(...names: string[]): string {
+    const dir = profileDir('web')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      dependencies: Object.fromEntries(names.map(name => [name, '^0.1.0'])),
+      dsh: { profile: { bundles: names } },
+    }))
+    return dir
+  }
+
+  it('reads a literal, and one level of constant alias — the shape that started this', () => {
+    // The reported plugin writes `var NAMESPACE = "dsh-comfyui-canvas"` and
+    // calls `configForms.get(NAMESPACE)`. A literal-only scan misses the very
+    // case the check exists for.
+    expect(configFormNamespaces('const render = () => ctx.configForms.get("comfyui-canvas")'))
+      .toEqual(['comfyui-canvas'])
+    expect(configFormNamespaces('var NAMESPACE = "dsh-comfyui-canvas"\nctx.configForms.get(NAMESPACE)'))
+      .toEqual(['dsh-comfyui-canvas'])
+    expect(configFormNamespaces('let ns = \'a-b\'\nctx.configForms.get( ns )'))
+      .toEqual(['a-b'])
+  })
+
+  it('drops a name assigned twice rather than guessing which value is live', () => {
+    // What the name holds at the call site is not decidable from text, and a
+    // wrong guess would be reported as a plugin defect.
+    expect(configFormNamespaces('let ns = "one"\nns = "two"\nconfigForms.get(ns)')).toEqual([])
+    // A single assignment next to other statements still counts.
+    expect(configFormNamespaces('const other = "x"\nconst ns = "two"\nconfigForms.get(ns)')).toEqual(['two'])
+  })
+
+  it('stays quiet on everything it cannot prove', () => {
+    // Dynamic forms, an aliased receiver, and non-namespace values: all
+    // "cannot judge", never "wrong".
+    expect(configFormNamespaces('configForms.get(prefix + "-suffix")')).toEqual([])
+    expect(configFormNamespaces('const forms = ctx.configForms\nforms.get("x")')).toEqual([])
+    expect(configFormNamespaces('ctx.configForms.get(name)')).toEqual([])
+    expect(configFormNamespaces('configForms.get("has space")')).toEqual([])
+    expect(configFormNamespaces('configForms.get("")')).toEqual([])
+    // The value must be a plain literal: a template or an escaped string is
+    // not this pattern.
+    expect(configFormNamespaces('configForms.get(`a-b`)')).toEqual([])
+  })
+
+  it('judges against the whole composition, and names what the package should ask for', () => {
+    declaredProfile('dsh-comfyui-canvas')
+    pkg('dsh-comfyui-canvas', clientManifest, {
+      'lib/client.js': 'var NAMESPACE = "dsh-comfyui-canvas"\nctx.configForms.get(NAMESPACE)',
+      'cordis.patch.yml': SIMPLE_PATCH,
+    })
+    // Its own id is what the plugin meant — the fix has to name it, not just
+    // the mistake.
+    const served = new Set(['comfyui-canvas'])
+    expect(findUnservedConfigNamespaces('web', served, () => [], profileDir('web')))
+      .toEqual([{ name: 'dsh-comfyui-canvas', namespaces: ['dsh-comfyui-canvas'], ownEntryIds: [] }])
+    // Served by ANY entry id in the composition — including one another
+    // package owns (carrier form) — and this goes quiet. That is the whole
+    // reason the judgement is not "is it this package's own id".
+    expect(findUnservedConfigNamespaces('web', new Set(['dsh-comfyui-canvas']), () => [], profileDir('web')))
+      .toEqual([])
+  })
+
+  it('says nothing about a package whose client resolves the name at runtime', () => {
+    // The second fixture from the report: @linxin666/dsh-remote-web-ui reads
+    // the served entry id through `forms.describe()`, so there is no literal
+    // to judge — and its client is full of its own package name, which must
+    // not be counted.
+    declaredProfile('remote-web-ui')
+    pkg('remote-web-ui', clientManifest, {
+      'lib/client.js': [
+        'const PACKAGE = "@linxin666/dsh-remote-web-ui"',
+        'const id = await forms.describe()',
+        'ctx.configForms.get(id)',
+        'console.log(PACKAGE)',
+      ].join('\n'),
+    })
+    expect(findUnservedConfigNamespaces('web', new Set(['remote-web-ui']), () => [], profileDir('web')))
+      .toEqual([])
+  })
+
+  it('needs a client bundle to judge at all', () => {
+    declaredProfile('server-only')
+    pkg('server-only', { name: 'server-only', main: 'lib/index.js' }, {})
+    expect(findUnservedConfigNamespaces('web', new Set(), () => [], profileDir('web'))).toEqual([])
   })
 })

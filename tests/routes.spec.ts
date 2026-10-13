@@ -1147,3 +1147,65 @@ describe('market state publication (#582 narrowest point)', () => {
     expect(logged).toContain('"level":"warn"')
   })
 })
+
+describe('a client that reads its config from a name nothing serves (#810)', () => {
+  /** A bundle package that also ships a client bundle (what the scan reads). */
+  function writeClientBundle(name: string, source: string): void {
+    writeBundle(name)
+    const pkgDir = join(dir, 'node_modules', name)
+    const manifest = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')) as {
+      dsh: Record<string, unknown>
+    }
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({
+      ...manifest,
+      exports: { './client': './lib/client.js' },
+      dsh: { ...manifest.dsh, client: { platform: 'web' } },
+    }))
+    mkdirSync(join(pkgDir, 'lib'), { recursive: true })
+    writeFileSync(join(pkgDir, 'lib', 'client.js'), source)
+  }
+
+  const getInstalled = async (): Promise<Record<string, unknown>> =>
+    jsonBody(await hit(routes, '/dsh-market/installed', { method: 'GET', url: '/dsh-market/installed' }))
+
+  it('names the package and the entry id it should have asked for', async () => {
+    // The reported shape: the client asks for its PACKAGE name while its own
+    // entry id is something else. The row needs both — the mistake to be
+    // believable and the value to write instead.
+    writeProfile(['alpha'])
+    writeClientBundle('alpha', 'var NAMESPACE = "alpha"\nctx.configForms.get(NAMESPACE)')
+
+    expect((await getInstalled()).configNamespaces).toEqual([
+      { name: 'alpha', namespaces: ['alpha'], ownEntryIds: ['alpha-entry'] },
+    ])
+  })
+
+  it('stays quiet when an entry id answers to that name, whoever declares it', async () => {
+    // Served by ANOTHER package's row counts: a carrier bundle mounts ids of
+    // its own, and judging by the asking package's ids alone would flag it.
+    writeProfile(['alpha', 'beta'])
+    writeBundle('beta', { entries: [{ id: 'shared-entry', name: 'beta' }] })
+    writeClientBundle('alpha', 'ctx.configForms.get("shared-entry")')
+
+    expect((await getInstalled()).configNamespaces).toBeUndefined()
+  })
+
+  it('reports the same finding on the diagnostics page', async () => {
+    // The page composes the host layers as well, so it is the wider of the
+    // two judgements; a finding on the row is a finding here.
+    writeProfile(['alpha'])
+    writeClientBundle('alpha', 'ctx.configForms.get("alpha-panel")')
+
+    const body = jsonBody(await hit(routes, '/dsh-market/check', { method: 'GET', url: '/dsh-market/check' }))
+    expect(body.configNamespaces).toEqual([
+      { name: 'alpha', namespaces: ['alpha-panel'], ownEntryIds: ['alpha-entry'] },
+    ])
+  })
+
+  it('is absent from a healthy profile, so the row renders nothing', async () => {
+    writeStandardProfile()
+    expect((await getInstalled()).configNamespaces).toBeUndefined()
+    const body = jsonBody(await hit(routes, '/dsh-market/check', { method: 'GET', url: '/dsh-market/check' }))
+    expect(body.configNamespaces).toEqual([])
+  })
+})
