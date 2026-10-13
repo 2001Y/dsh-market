@@ -263,7 +263,8 @@ describe('api() base resolution (#345)', () => {
   })
 
   describe('notes the market does not hold (#819)', () => {
-    function openNotes(changelog: object): Promise<HTMLElement> {
+    const ZH_LOCALE = { active: 'zh' }
+    function openNotes(changelog: object, dict: Record<string, string> = en): Promise<HTMLElement> {
       stubFetch({
         '/dsh-market/installed': {
           profile: 'web', installed: { 'dsh-codearts-auth': 'git+https://gitee.com/o/r.git' }, live: [], disabled: [], notes: {},
@@ -273,8 +274,12 @@ describe('api() base resolution (#345)', () => {
         },
         '/dsh-market/changelog': changelog,
       })
-      render(<MarketSection {...props()} preferredSubsectionId="installed" />)
-      return screen.findByRole('button', { name: new RegExp(en.notesLink) }).then((button) => {
+      const localized = dict === en ? {} : {
+        t: (key: string) => dict[key] ?? key,
+        locale: { subscribe: () => () => {}, getSnapshot: () => ZH_LOCALE },
+      }
+      render(<MarketSection {...props()} {...localized} preferredSubsectionId="installed" />)
+      return screen.findByRole('button', { name: new RegExp(dict.notesLink!) }).then((button) => {
         fireEvent.click(button)
         return button
       })
@@ -298,6 +303,16 @@ describe('api() base resolution (#345)', () => {
       await openNotes({ kind: 'source', reason: 'missing', sourceUrl: null })
       expect(await screen.findByText(new RegExp(en.notesSourceNoLink))).toBeTruthy()
       expect(screen.queryByRole('link', { name: en.notesSourceLink })).toBeNull()
+    })
+
+    it('joins the two Chinese sentences without a space, and the English ones with one', async () => {
+      await openNotes({ kind: 'source', reason: 'missing', sourceUrl: null }, zh)
+      const zhLine = await screen.findByText(new RegExp(zh.notesSourceNoLink))
+      expect(zhLine.textContent).toBe(`${zh.notesSource}${zh.notesSourceNoLink}`)
+      cleanup()
+      await openNotes({ kind: 'source', reason: 'missing', sourceUrl: null })
+      const enLine = await screen.findByText(new RegExp(en.notesSourceNoLink))
+      expect(enLine.textContent).toBe(`${en.notesSource} ${en.notesSourceNoLink}`)
     })
 
     it('does not render a link that is not http(s)', async () => {

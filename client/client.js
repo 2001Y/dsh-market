@@ -14121,13 +14121,13 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 								})]
 							}) : updateNotes.kind === "source" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 								className: Market_module_css_default.spec,
-								children: [t(updateNotes.reason === "unavailable" ? "notesLoadFail" : "notesSource"), typeof updateNotes.sourceUrl === "string" && /^https?:\/\//i.test(updateNotes.sourceUrl) ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [" ", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
+								children: [t(updateNotes.reason === "unavailable" ? "notesLoadFail" : "notesSource"), typeof updateNotes.sourceUrl === "string" && /^https?:\/\//i.test(updateNotes.sourceUrl) ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [lang === "zh" ? "" : " ", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
 									className: Market_module_css_default.notesSourceLink,
 									href: updateNotes.sourceUrl,
 									target: "_blank",
 									rel: "noreferrer",
 									children: t("notesSourceLink")
-								})] }) : updateNotes.reason !== "unavailable" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [" ", t("notesSourceNoLink")] })]
+								})] }) : updateNotes.reason !== "unavailable" && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [lang === "zh" ? "" : " ", t("notesSourceNoLink")] })]
 							}) : /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 								className: Market_module_css_default.spec,
 								children: t("notesNone")

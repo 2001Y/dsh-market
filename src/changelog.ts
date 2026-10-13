@@ -201,6 +201,10 @@ export function sourceWebUrl(spec: string): string | null {
   let remote = spec.trim().replace(/^git\+/i, '')
   const scp = /^git@([^/\s:]+):(.+)$/.exec(remote)
   if (scp !== null) remote = `https://${scp[1]}/${scp[2]!.replace(/^\/+/, '')}`
+  // npm also accepts the scp colon inside an ssh URL (`ssh://git@host:org/repo`),
+  // which `URL` rejects as a non-numeric port.
+  const sshScp = /^ssh:\/\/(?:[^@/\s]+@)?([^/\s:]+):(?!\d+(?:\/|$))(.+)$/i.exec(remote)
+  if (sshScp !== null) remote = `https://${sshScp[1]}/${sshScp[2]!.replace(/^\/+/, '')}`
   let url: URL
   try {
     url = new URL(remote.split('#')[0]!)
@@ -208,7 +212,8 @@ export function sourceWebUrl(spec: string): string | null {
     return null
   }
   const path = url.pathname.replace(/^\/+|\/+$/g, '').replace(/\.git$/i, '')
-  if (path === '' || !path.split('/').every(seg => /^[A-Za-z0-9_.-]+$/.test(seg) && seg !== '.' && seg !== '..')) return null
+  // A leading `~` is a user namespace on hosts such as sourcehut.
+  if (path === '' || !path.split('/').every((seg, i) => /^[A-Za-z0-9_.-]+$/.test(i === 0 ? seg.replace(/^~/, '') : seg) && seg !== '.' && seg !== '..')) return null
   // An ssh/git port is the transport's, not the web server's.
   if (/^https?:$/i.test(url.protocol)) return `${url.protocol}//${url.host}/${path}`
   if (/^(?:ssh|git):$/i.test(url.protocol)) return `https://${url.hostname}/${path}`
@@ -408,7 +413,7 @@ export async function updateNotesFor(
           const catalogEntry = entryForRepo(payload, plugin.url)
           // An empty row does not become the key. Publish times for an npm
           // install follow from `specKey` staying null, and a subpath install
-          // keeps the root key so the miss stays `none`.
+          // keeps the root key so a sibling's notes are not borrowed.
           if (usableNotes(catalogEntry)) {
             key = plugin.url
             entry = catalogEntry

@@ -611,6 +611,8 @@ describe('sourceWebUrl', () => {
     ['gitlab:g/s/r', 'https://gitlab.com/g/s/r'],
     ['git@gitee.com:o/r.git', 'https://gitee.com/o/r'],
     ['ssh://git@git.example.com:2222/o/r.git', 'https://git.example.com/o/r'],
+    ['git+ssh://git@gitee.com:o/r.git', 'https://gitee.com/o/r'],
+    ['git+https://git.sr.ht/~user/repo', 'https://git.sr.ht/~user/repo'],
     ['git+https://gitee.com:8443/o/r.git', 'https://gitee.com:8443/o/r'],
   ])('reads %s as %s', (spec, url) => {
     expect(sourceWebUrl(spec)).toBe(url)

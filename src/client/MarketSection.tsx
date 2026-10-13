@@ -7569,8 +7569,8 @@ export function MarketSection(props: MarketSectionProps) {
               <div className={css.spec}>
                 {t(updateNotes.reason === 'unavailable' ? 'notesLoadFail' : 'notesSource')}
                 {typeof updateNotes.sourceUrl === 'string' && /^https?:\/\//i.test(updateNotes.sourceUrl)
-                  ? <>{' '}<a className={css.notesSourceLink} href={updateNotes.sourceUrl} target="_blank" rel="noreferrer">{t('notesSourceLink')}</a></>
-                  : updateNotes.reason !== 'unavailable' && <>{' '}{t('notesSourceNoLink')}</>}
+                  ? <>{lang === 'zh' ? '' : ' '}<a className={css.notesSourceLink} href={updateNotes.sourceUrl} target="_blank" rel="noreferrer">{t('notesSourceLink')}</a></>
+                  : updateNotes.reason !== 'unavailable' && <>{lang === 'zh' ? '' : ' '}{t('notesSourceNoLink')}</>}
               </div>
             )
             : <div className={css.spec}>{t('notesNone')}</div>
