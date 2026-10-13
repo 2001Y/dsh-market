@@ -10,7 +10,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { resolveDshHome } from '../src/home-paths.ts'
 import {
-  addProfileBundle, bundlePatchInsertedIds, bundlesDroppedFromProfile, readProfileManifestSnapshot, bundlePatchTargets, conflictingEntryIds, declaredBundlePatchFiles, dropFromManifest, entryArtifactExists, hasDshManifest, hasLoadableEntry, holdsNativeAddon, isDshProfileName, mergeDuplicateReleaseAgeExcludes, pluginSubdirs, profileDir,
+  addProfileBundle, bundlePatchInsertedIds, bundlesDroppedFromProfile, readProfileManifestSnapshot, bundlePatchTargets, conflictingEntryIds, declaredBundlePatchFiles, dropFromManifest, entryArtifactExists, hasDshManifest, hasLoadableEntry, holdsNativeAddon, isDshProfileName, mergeDuplicateReleaseAgeExcludes, parsePatchRows, pluginSubdirs, profileDir,
   readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledRepoEvidence, readInstalledRepoIdentities, readInstalledVersion, readLockCommits,
   removeProfileBundle,
 } from '../src/profile.ts'
@@ -1017,6 +1017,105 @@ describe('setAllowBuilds (#6)', () => {
   })
 })
 
+/**
+ * #841: an insert row's `config:` is its payload, and payloads carry `id:`
+ * keys of their own — a preset row lists the plugins it will instantiate
+ * under `config.plugins[].id`. Counting those as inserted loader entry ids
+ * made two bundles that instantiate the same official plugins read as two
+ * bundles inserting the same entry ids, and the market then refused the
+ * second one over a clash the host does not have.
+ */
+describe('parsePatchRows — an insert row\'s payload is not a loader entry (#841)', () => {
+  const presetShaped = [
+    '- insert:',
+    '    - id: preset-a',
+    "      name: '@deepseek-ai/dsh-agent-preset'",
+    '      config:',
+    '        id: a',
+    '        plugins:',
+    '          - id: persona',
+    "            name: '@deepseek-ai/dsh-persona'",
+    '          - id: tool-todo',
+    "            name: '@deepseek-ai/dsh-tool-todo'",
+    '',
+  ].join('\n')
+
+  it('counts the row and nothing the row configures', () => {
+    // Exactly the input from the report, on 1.66.17 and unchanged on main:
+    // four ids came out, and only the first is a row.
+    expect(parsePatchRows(presetShaped).insertedIds).toEqual(['preset-a'])
+  })
+
+  it('still counts the children of a group, whose config IS more rows', () => {
+    // The shape the fix must not lose: a group's list-valued config holds
+    // child loader entries, and two bundles sharing a child id really do
+    // brick the next boot (tests/patch.spec.ts pins the reference side).
+    const groupShaped = [
+      '- insert:',
+      '    - id: group-x',
+      '      name: cordis:group',
+      '      group: true',
+      '      config:',
+      '        - id: real-child',
+      '          name: some-plugin',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(groupShaped).insertedIds).toEqual(['group-x', 'real-child'])
+  })
+
+  it('leaves a plain plugin\'s list-valued config alone, as the strict parser does', () => {
+    // Only a GROUP row reads a list config as child rows; for anyone else a
+    // list is ordinary options. userPatchPackageReferences has drawn that
+    // line since it was written — the line scanner now agrees with it.
+    const optionsShaped = [
+      '- insert:',
+      '  - id: array-options',
+      '    name: options-plugin',
+      '    config:',
+      '      - id: not-a-row',
+      '        name: nested-array-value',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(optionsShaped).insertedIds).toEqual(['array-options'])
+  })
+
+  it('ends the payload at the next row, so later rows still count', () => {
+    const twoRows = [
+      '- insert:',
+      '    - id: preset-a',
+      "      name: '@deepseek-ai/dsh-agent-preset'",
+      '      config:',
+      '        id: a',
+      '        plugins:',
+      '          - id: persona',
+      '            name: dsh-persona',
+      '    - id: plain-b',
+      '      name: plain-plugin',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(twoRows).insertedIds).toEqual(['preset-a', 'plain-b'])
+  })
+
+  it('finds the group no matter which side of config the keys are written', () => {
+    // `group:` after `config:` is unusual but legal YAML. A scan that only
+    // looked upwards would read this row's children as payload and lose the
+    // collision it exists to catch, so the row is read as a whole.
+    const reordered = [
+      '- insert:',
+      '    - config:',
+      '        - id: real-child',
+      '          name: some-plugin',
+      '      name: cordis:group',
+      '      group: true',
+      '      id: group-x',
+      '',
+    ].join('\n')
+    // Set comparison: which of the two ids is listed first is an artefact of
+    // their order in the file, not something callers depend on.
+    expect([...parsePatchRows(reordered).insertedIds].sort()).toEqual(['group-x', 'real-child'])
+  })
+})
+
 describe('conflictingEntryIds (#122)', () => {
   /** Write a package whose bundle patch holds the given rows. */
   function bundle(dir: string, name: string, patch: string): void {
@@ -1050,6 +1149,42 @@ describe('conflictingEntryIds (#122)', () => {
       // distinction #147 drew for the disable path.
       bundle(dir, 'newcomer', '- insert:\n    - id: mine\n      name: newcomer\n- id: theirs\n  config:\n    tweaked: true\n')
       expect(conflictingEntryIds(dir, 'newcomer', ['incumbent'])).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not flag two preset bundles whose payloads instantiate the same plugins (#841)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dshm-clash-'))
+    try {
+      // Two bundles, each inserting ONE preset row, each instantiating the
+      // same official plugins. Their loader ids are disjoint (`preset-a` vs
+      // `preset-b`, and `a` vs `b` are preset ids in their own namespace),
+      // and the host boots the combination — 6 presets declaring `id:
+      // persona` each is a normal tree. Reading the payloads as entry ids
+      // made this a 16-id "conflict" and uninstalled the newcomer.
+      const preset = (row: string, presetId: string): string =>
+        `- insert:\n    - id: ${row}\n      name: '@deepseek-ai/dsh-agent-preset'\n      config:\n        id: ${presetId}\n        plugins:\n          - id: persona\n            name: '@deepseek-ai/dsh-persona'\n          - id: tool-todo\n            name: '@deepseek-ai/dsh-tool-todo'\n`
+      bundle(dir, 'smart-fount', preset('preset-a', 'a'))
+      bundle(dir, 'clearai-dsh', preset('preset-b', 'b'))
+      expect(conflictingEntryIds(dir, 'clearai-dsh', ['smart-fount'])).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('still flags a real collision among the children of a group (#841)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dshm-clash-'))
+    try {
+      // Narrowing the guard must not cost it the case it exists for: the
+      // group's children ARE entries, so one shared child id is a duplicate
+      // loader entry id and the host will refuse the next boot.
+      const group = (row: string, child: string): string =>
+        `- insert:\n    - id: ${row}\n      name: cordis:group\n      group: true\n      config:\n        - id: ${child}\n          name: some-plugin\n`
+      bundle(dir, 'incumbent', group('group-a', 'real-child'))
+      bundle(dir, 'newcomer', group('group-b', 'real-child'))
+      expect(conflictingEntryIds(dir, 'newcomer', ['incumbent']))
+        .toEqual([{ id: 'real-child', owner: 'incumbent' }])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
