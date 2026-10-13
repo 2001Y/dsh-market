@@ -1114,6 +1114,107 @@ describe('parsePatchRows — an insert row\'s payload is not a loader entry (#84
     // their order in the file, not something callers depend on.
     expect([...parsePatchRows(reordered).insertedIds].sort()).toEqual(['group-x', 'real-child'])
   })
+
+  it('ends a payload opened on the marker line at the row\'s own next key', () => {
+    // `- config:` puts the key two columns right of the `-`. The row's later
+    // keys sit at that column too; measured from the `-`, `id: real-row`
+    // read as payload and the row lost its own id.
+    const configFirst = [
+      '- insert:',
+      '    - config:',
+      '        foo: 1',
+      '      id: real-row',
+      '      name: x',
+      '    - id: next-row',
+      '      name: y',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(configFirst).insertedIds).toEqual(['real-row', 'next-row'])
+  })
+
+  it('finds the group past a list-valued key written before config', () => {
+    // The `- foo` under `tags:` is a list item, not the row's marker; taking
+    // it for one read the row from there and never saw `group: true`.
+    const tagged = [
+      '- insert:',
+      '    - id: group-x',
+      '      name: cordis:group',
+      '      group: true',
+      '      tags:',
+      '        - foo',
+      '      config:',
+      '        - id: real-child',
+      '          name: some-plugin',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(tagged).insertedIds).toEqual(['group-x', 'real-child'])
+  })
+
+  it('reads a row whose marker is followed by more than one space', () => {
+    // `-   id:` is legal YAML; the row's keys then sit four columns right of
+    // the `-`, not two.
+    const wideMarker = [
+      '- insert:',
+      '  -   id: group-x',
+      '      name: cordis:group',
+      '      group: true',
+      '      config:',
+      '        - id: real-child',
+      '          name: some-plugin',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(wideMarker).insertedIds).toEqual(['group-x', 'real-child'])
+  })
+
+  it('reads a group row opened by a bare `-`', () => {
+    const bareMarker = [
+      '- insert:',
+      '    -',
+      '      id: group-x',
+      '      group: true',
+      '      config:',
+      '        - id: real-child',
+      '          name: some-plugin',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(bareMarker).insertedIds).toEqual(['group-x', 'real-child'])
+  })
+
+  it('keeps a payload\'s own `config:` keys inside the payload', () => {
+    // A preset's plugin list may configure each plugin. That inner `config:`
+    // is payload too; letting it move the payload's edge ended the payload
+    // early, and `official` read as a row this package inserts — #841 again.
+    const nestedConfig = [
+      '- insert:',
+      '    - id: preset',
+      '      name: x',
+      '      config:',
+      '        plugins:',
+      '          - config:',
+      '              a: 1',
+      '            id: official',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(nestedConfig).insertedIds).toEqual(['preset'])
+  })
+
+  it('reads a list under any other key of a row as data, not rows', () => {
+    // Only a group's config holds rows. A list under `tags:` (or any other
+    // key) is the row's data, whatever keys its items carry.
+    const tagged = [
+      '- insert:',
+      '    - id: a',
+      '      tags:',
+      '        - id: tag-one',
+      '        - config:',
+      '            x: 1',
+      '          id: tag-two',
+      '      name: z',
+      '    - id: b',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(tagged).insertedIds).toEqual(['a', 'b'])
+  })
 })
 
 describe('conflictingEntryIds (#122)', () => {
