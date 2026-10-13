@@ -9,7 +9,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { JSON_SCHEMA, load } from 'js-yaml'
 import { resolveDshHome } from './home-paths.ts'
-import { githubRemoteIdentities, githubRepoIdentities, isGitHostedSpec, repoOfTarget } from './sources.ts'
+import { githubRemoteIdentities, githubRepoIdentities, hostedRepoKey, isGitHostedSpec, repoOfTarget } from './sources.ts'
 
 /**
  * Whether a profile name follows DSH's own directory-name contract.
@@ -727,13 +727,24 @@ export function readLockCommits(profile: string, explicitDir?: string): Map<stri
  * by pnpm's `path:` selector, so the spec's subpath has to match too — and
  * when the spec names no subpath while several entries of that remote do,
  * there is no answer rather than the first sibling's commit (#632).
+ *
+ * The key on both sides of the comparison is `hostedRepoKey`, the identity
+ * the rest of the market already compares specs by (#851). This function
+ * used to derive its own, and that second spelling lost every install pnpm
+ * writes the shorthand back for: it demanded an `https?://` prefix or a
+ * `.git` suffix, so `github:owner/repo` keyed to nothing at all, and it kept
+ * the `.git` suffix, so the spec side `https://github.com/o/r` could never
+ * equal the lockfile side pnpm writes as `git@github.com:o/r.git`. A floating
+ * shorthand therefore had no commit, and with no commit the update route
+ * refuses to roll back — the market reports "cannot confirm the commit before
+ * the update" for a lockfile that states it plainly.
  */
 export function readGitResolutionCommit(
   profile: string,
   spec: string,
   explicitDir?: string,
 ): string | null {
-  const want = normalizeGitRepoKey(spec)
+  const want = hostedRepoKey(spec)
   if (want === null) return null
   const wantPath = gitSubpathSelector(spec)
   const matches: string[] = []
@@ -746,7 +757,7 @@ export function readGitResolutionCommit(
       const commit = /\bcommit:\s*([0-9a-f]{40})\b/i.exec(body)
       const repo = /\brepo:\s*([^\s,}]+)/.exec(body)
       if (commit === null || repo === null) continue
-      if (normalizeGitRepoKey(repo[1]!) !== want) continue
+      if (hostedRepoKey(repo[1]!) !== want) continue
       const entryPath = /\bpath:\s*([^\s,}]+)/.exec(body)?.[1]?.replace(/^\/+|\/+$/g, '').toLowerCase() ?? null
       if (wantPath !== null) {
         if (entryPath === wantPath) return commit[1]!.toLowerCase()
@@ -768,20 +779,6 @@ function gitSubpathSelector(spec: string): string | null {
   if (selector === undefined) return null
   const trimmed = selector.replace(/^\/+|\/+$/g, '').toLowerCase()
   return trimmed === '' ? null : trimmed
-}
-
-/** Lowercased transport-agnostic key for comparing two git remote spellings. */
-function normalizeGitRepoKey(spec: string): string | null {
-  let remote = spec.trim().replace(/^git\+/i, '')
-  const scp = /^git@([^:]+):(.+)$/.exec(remote)
-  if (scp !== null) remote = `https://${scp[1]}/${scp[2]!.replace(/^\/*/, '')}`
-  const hash = remote.indexOf('#')
-  if (hash !== -1) remote = remote.slice(0, hash)
-  const query = remote.indexOf('?')
-  if (query !== -1) remote = remote.slice(0, query)
-  remote = remote.replace(/\/+$/, '').toLowerCase()
-  if (!/^https?:\/\//.test(remote) && !remote.includes('.git')) return null
-  return remote
 }
 
 /** True when the installed package's manifest declares a dsh plugin surface. */
