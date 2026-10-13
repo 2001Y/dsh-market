@@ -904,30 +904,48 @@ export function parsePatchRows(text: string): { names: string[]; ids: string[]; 
     // and the market uninstalled the newcomer over a clash the host does
     // not have.
     let payloadIndent: number | null = null
-    /** Index of the `- ` line that opens the row holding `from`. */
-    const rowStart = (from: number): number => {
-      const isRowStart = (index: number): boolean =>
-        /^-\s/u.test(rows[index].trimmed) || rows[index].trimmed === '-'
-      if (isRowStart(from)) return from
-      for (let j = from - 1; j >= 0; j--) {
-        if (isRowStart(j)) return j
+    const isDash = (index: number): boolean => /^-(?:\s|$)/u.test(rows[index].trimmed)
+    /**
+     * Column where a line's key text starts: its indent plus any `- ` marker.
+     * A row's keys share this column whether written on the marker line or
+     * below it, however many spaces follow the `-`.
+     */
+    const keyCol = (index: number): number => {
+      // A bare `-` puts the row's keys on the lines below it.
+      if (rows[index].trimmed === '-') {
+        const next = rows[index + 1]
+        return next !== undefined && next.indent > rows[index].indent ? next.indent : rows[index].indent + 2
       }
-      return 0
+      const dash = /^-\s+/u.exec(rows[index].trimmed)
+      return rows[index].indent + (dash === null ? 0 : dash[0].length)
+    }
+    /** Index of the `- ` line that opens the row holding `from`, or -1. */
+    const rowStart = (from: number): number => {
+      const col = keyCol(from)
+      for (let j = from; j >= 0; j--) {
+        if (isDash(j) && keyCol(j) === col) return j
+        // Shallower than the row's keys: left the row without finding its marker.
+        if (rows[j].indent < col) return -1
+      }
+      return -1
     }
     /**
      * Whether the insert row holding the `config:` at `from` declares
      * `group: true`. YAML gives a mapping's keys no order, so this reads the
-     * whole row — its own `- ` marker plus the key lines at the marker's body
-     * indentation — rather than only what happened to be written above.
+     * whole row — its own `- ` marker plus the key lines at the row's key
+     * column — rather than only what happened to be written above.
      */
     const rowDeclaresGroup = (from: number): boolean => {
       const start = rowStart(from)
+      if (start === -1) return false
       const markerIndent = rows[start].indent
+      const col = keyCol(start)
       for (let j = start; j < rows.length; j++) {
         const row = rows[j]
         if (j > start && row.indent <= markerIndent) break
-        // The row's own keys; a config body sits deeper than these.
-        if (j > start && row.indent !== markerIndent + 2) continue
+        // Only the row's own keys: a config body, or a list under another
+        // key, is not at the key column or starts with its own `- `.
+        if (j > start && (row.indent !== col || isDash(j))) continue
         if (/^\s*-?\s*group:\s*['"]?true['"]?\s*$/u.test(row.line)) return true
       }
       return false
@@ -951,14 +969,21 @@ export function parsePatchRows(text: string): { names: string[]; ids: string[]; 
         payloadIndent = null
         continue
       }
-      // Exactly one `config:` shape carries loader rows: a `group: true` row
-      // whose config is a LIST, because its children are entries. That is
-      // the rule userPatchPackageReferences has always applied to this same
-      // shape — a plain plugin may use a list of `{ name: … }` as ordinary
-      // options, and those must stay payload. Anything else here is payload
-      // too, so the block is skipped rather than counted.
-      if (insertIndent !== null && indent > insertIndent && /^\s*-?\s*config:\s*$/u.test(line)) {
-        if (!(rowDeclaresGroup(i) && valueIsList(i, indent))) payloadIndent = indent
+      // Exactly one block under a row carries loader rows: the `config:` of a
+      // `group: true` row whose config is a LIST, because its children are
+      // entries. That is the rule userPatchPackageReferences has always
+      // applied to this same shape — a plain plugin may use a list of
+      // `{ name: … }` as ordinary options, and those must stay payload. Any
+      // other block-valued key (`config:`, `tags:`, …) holds data too, so the
+      // block is skipped rather than counted.
+      // Inside a payload, a nested key is more payload: it must not move the
+      // payload's edge, or the payload ends early and its ids count.
+      const blockKey = /^\s*-?\s*([A-Za-z_][\w.-]*):\s*$/u.exec(line)
+      if (payloadIndent === null && insertIndent !== null && indent > insertIndent && blockKey !== null) {
+        // The key's own column, not the line's: when the key sits on a `- `
+        // line, the row's later keys share its column and are not payload.
+        const col = keyCol(i)
+        if (!(blockKey[1] === 'config' && rowDeclaresGroup(i) && valueIsList(i, col))) payloadIndent = col
         continue
       }
       const name = /^\s*-?\s*name:\s*['"]?([^'"\s]+)/.exec(line)
