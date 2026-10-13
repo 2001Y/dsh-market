@@ -434,6 +434,38 @@ describe('the replacement is given time to be dead (#719)', () => {
     }
     expect(up, 'the surface never came up after the replacement exited').toBe(true)
   })
+
+  it('stands down when the port is already served, whatever the pid says (#854)', async () => {
+    // The pid the helper hands over is the process IT spawned, and on Windows
+    // that is the `powershell.exe` wrapper rather than the node host that binds
+    // the port — the reporter's log shows the guard judging a live host dead by
+    // exactly that pid, which is how the surface came to take a port out from
+    // under a boot that was still running. A socket that answers settles the
+    // same question without a pid.
+    const { port } = await hold()
+    const { dir, patchPath } = makeProfile()
+    const config = makeConfig(dir, patchPath, [makePlugin('blamed-plugin')])
+    config.port = port
+    config.logs.err = join(dir, 'err.log')
+    writeFileSync(config.logs.err, TWO_ENTRIES_FAILED)
+    // A pid that is already gone — deliberately the unhelpful handover.
+    const dead = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' })
+    cleanups.push(() => { dead.kill() })
+    await sleep(300)
+
+    const startedAt = Date.now()
+    const outcome = await runRecovery(config, { exitCode: null, bound: false, replacementPid: dead.pid })
+    const elapsed = Date.now() - startedAt
+
+    expect(outcome).toBe('booted')
+    // Fast, because it never reached the port-free wait (30s) that a surface
+    // which intended to bind would sit through first. Without the guard this
+    // test ends 'released' half a minute later.
+    expect(elapsed, 'the surface waited on a port it should have left alone').toBeLessThan(5000)
+    // The note goes to the recovery log beside the boot log, like every other
+    // stage line this surface writes.
+    expect(readFileSync(`${config.logs.err}.recovery.log`, 'utf8')).toContain('already answering')
+  })
 })
 
 describe('runRecovery', () => {
