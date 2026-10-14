@@ -6,10 +6,10 @@
  * behind a working fallback.
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  entryForDep, extractReadmeImageCandidates, extractReadmeImages, formatCount, groupSwitchState, installedForCatalog, isInstalled, isMarketItself, localizeBilingual, localizeBilingualList, looksTerminal, matchInstalledName, orderedCategories, pageItems, pluginCategories, pluginsForFavorites, previewDimensionScore, rankThemeScreenshots, releaseNotesHttpsImage, safeScreenshots, sanitizeReleaseNotesBody, staleFavoriteUrls, themePlugins, visiblePlugins, humanOutput, failureText, catalogEntryForInstalled} from '../src/client/market-data.ts'
-import type { RegistryPlugin, ScreenshotCandidate } from '../src/client/market-data.ts'
+  entryForDep, extractReadmeImageCandidates, extractReadmeImages, formatCount, groupSwitchState, installedForCatalog, isInstalled, isMarketItself, localizeBilingual, localizeBilingualList, looksTerminal, matchInstalledName, orderedCategories, pageItems, pluginCategories, pluginScreenshotCandidates, pluginsForFavorites, previewDimensionScore, rankThemeScreenshots, releaseNotesHttpsImage, resetGithubRouting, resetScreenshotsCache, safeScreenshots, sanitizeReleaseNotesBody, staleFavoriteUrls, themePlugins, visiblePlugins, humanOutput, failureText, catalogEntryForInstalled} from '../src/client/market-data.ts'
+import type { RegistryPlugin, ScreenshotCandidate, ScreenshotRejection } from '../src/client/market-data.ts'
 
 function plugin(partial: Partial<RegistryPlugin>): RegistryPlugin {
   return { name: 'x', owner: 'o', url: 'https://github.com/o/x', category: 'tool', ...partial }
@@ -672,6 +672,13 @@ describe('group switch derivation (#60)', () => {
 })
 
 describe('screenshots (#61)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    resetScreenshotsCache()
+    resetGithubRouting()
+  })
+
   it('safeScreenshots keeps only https GitHub-hosted raster images, deduped and capped', () => {
     expect(safeScreenshots([
       'https://raw.githubusercontent.com/o/r/main/a.png',
@@ -689,6 +696,49 @@ describe('screenshots (#61)', () => {
     // capped at 6
     const many = Array.from({ length: 9 }, (_, i) => `https://raw.githubusercontent.com/o/r/main/s${i}.png`)
     expect(safeScreenshots(many)).toHaveLength(6)
+  })
+
+  it('reports each refused candidate with its reason, and refuses exactly the same values', () => {
+    const png = 'https://raw.githubusercontent.com/o/r/main/a.png'
+    const svg = 'https://raw.githubusercontent.com/o/r/main/logo.svg'
+    const badHost = 'https://evil.example/track.png'
+    const notHttps = 'http://raw.githubusercontent.com/o/r/main/b.png'
+    const unparseable = 'not a url'
+    const rejected: ScreenshotRejection[] = []
+
+    // The accepted list is byte-for-byte the old one — 42 included.
+    expect(safeScreenshots(
+      [png, svg, badHost, notHttps, unparseable, 42, png],
+      { onReject: rejection => { rejected.push(rejection) } },
+    )).toEqual([png])
+    expect(rejected).toEqual([
+      { value: svg, reason: 'svg is not rendered' },
+      { value: badHost, reason: 'host not allowlisted (evil.example)' },
+      { value: notHttps, reason: 'not https' },
+      { value: unparseable, reason: 'not a parseable URL' },
+      { value: 42, reason: 'not a string' },
+    ])
+  })
+
+  it('warns once per catalog entry whose declared screenshots are all refused, and still falls back to README', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const svg = 'https://raw.githubusercontent.com/o/r/HEAD/docs/preview.svg'
+    const fromReadme = 'https://raw.githubusercontent.com/o/r/HEAD/docs/readme-preview.png'
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      `## Screenshots / 截图\n![full preview](${fromReadme})\n`,
+      { status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' } },
+    )))
+    const entry = plugin({ name: 'svg-only-entry', url: 'https://github.com/o/r', screenshots: [svg, svg] })
+
+    // Every declared shot is refused, so the README fallback is what renders —
+    // and that is worth one line, because nothing else says why.
+    expect((await pluginScreenshotCandidates(entry)).map(candidate => candidate.src)).toEqual([fromReadme])
+    await pluginScreenshotCandidates(entry)
+    expect(warn).toHaveBeenCalledTimes(1)
+    const line = String(warn.mock.calls[0]![0])
+    expect(line).toContain('svg-only-entry')
+    expect(line).toContain(svg)
+    expect(line).toContain('svg is not rendered')
   })
 
   it('sanitizeReleaseNotesBody drops pasted HTML images and other tags without eating prose', () => {
