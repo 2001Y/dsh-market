@@ -2369,18 +2369,41 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			"github.com"
 		]);
 		const MAX_SCREENSHOTS = 6;
-		/** Return one safe screenshot URL without applying the public list limit. */
-		function safeScreenshot(value) {
-			if (typeof value !== "string") return null;
+		function gateScreenshot(value) {
+			if (typeof value !== "string") return {
+				ok: false,
+				reason: "not a string"
+			};
 			let parsed;
 			try {
 				parsed = new URL(value);
 			} catch {
-				return null;
+				return {
+					ok: false,
+					reason: "not a parseable URL"
+				};
 			}
-			if (parsed.protocol !== "https:" || !SCREENSHOT_HOSTS.has(parsed.hostname)) return null;
-			if (/\.svg$/iu.test(parsed.pathname)) return null;
-			return value;
+			if (parsed.protocol !== "https:") return {
+				ok: false,
+				reason: "not https"
+			};
+			if (!SCREENSHOT_HOSTS.has(parsed.hostname)) return {
+				ok: false,
+				reason: `host not allowlisted (${parsed.hostname})`
+			};
+			if (/\.svg$/iu.test(parsed.pathname)) return {
+				ok: false,
+				reason: "svg is not rendered"
+			};
+			return {
+				ok: true,
+				src: value
+			};
+		}
+		/** Return one safe screenshot URL without applying the public list limit. */
+		function safeScreenshot(value) {
+			const gate = gateScreenshot(value);
+			return gate.ok ? gate.src : null;
 		}
 		/**
 		* Prepare a GitHub release body for the update-notes dialog's tiny markdown
@@ -2409,14 +2432,29 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				src
 			};
 		}
-		/** Keep only https URLs on allowlisted image hosts; SVG dropped (logos/badges). */
-		function safeScreenshots(urls) {
+		/**
+		* Keep only https URLs on allowlisted image hosts; SVG dropped (logos/badges).
+		*
+		* `onReject` is opt-in, because whether a refusal deserves a word depends on
+		* where the list came from: a README contributes mostly badges, logos and
+		* third-party hosts, where refusing IS the intended outcome. A curated
+		* catalog list is different — every URL in it is declared intent — so
+		* `pluginScreenshotCandidates` is the caller that reports (see there).
+		*/
+		function safeScreenshots(urls, options = {}) {
 			if (!Array.isArray(urls)) return [];
+			const { onReject } = options;
 			const safe = [];
 			for (const value of urls) {
-				const src = safeScreenshot(value);
-				if (src === null) continue;
-				if (!safe.includes(src)) safe.push(src);
+				const gate = gateScreenshot(value);
+				if (!gate.ok) {
+					onReject?.({
+						value,
+						reason: gate.reason
+					});
+					continue;
+				}
+				if (!safe.includes(gate.src)) safe.push(gate.src);
 				if (safe.length >= MAX_SCREENSHOTS) break;
 			}
 			return safe;
@@ -2549,16 +2587,42 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			}).sort((a, b) => b.score - a.score || a.candidate.order - b.candidate.order).slice(0, MAX_SCREENSHOTS).map((item) => item.candidate.src);
 		}
 		const readmeShotsCache = /* @__PURE__ */ new Map();
-		/** Clear README-derived media at the boundary of an accepted catalog generation. */
+		/**
+		* Declared screenshots the market refuses, reported once per catalog entry.
+		*
+		* A curated entry is the publisher's declaration, and the registry gate that
+		* accepts it (`scripts/validate-registry.mjs`, E12) allows any https URL on
+		* the four GitHub hosts, while this client additionally refuses `.svg`. An
+		* entry can therefore pass CI with a screenshot the market then drops, and
+		* until this existed nothing said so: the card rendered fewer previews, or —
+		* when every declared shot was refused — the client quietly fell back to
+		* scraping the README. Keyed by entry plus the refused values, so a re-render,
+		* a dialog and a theme card report one line between them, and cleared with the
+		* README cache at each accepted catalog generation.
+		*/
+		const refusedCuratedScreenshots = /* @__PURE__ */ new Set();
+		function warnRefusedCuratedScreenshots(plugin, rejections) {
+			const details = [...new Set(rejections.map(({ value, reason }) => `${reason}: ${String(value)}`))];
+			const key = `${plugin.url}\n${details.join("\n")}`;
+			if (refusedCuratedScreenshots.has(key)) return;
+			refusedCuratedScreenshots.add(key);
+			console.warn(`[dsh-market] catalog entry "${plugin.name}" declares ${details.length} screenshot(s) the market will not load — ${details.join("; ")}`);
+		}
+		/** Clear README-derived media and refusal reporting at the boundary of an accepted catalog generation. */
 		function resetScreenshotsCache() {
 			readmeShotsCache.clear();
+			refusedCuratedScreenshots.clear();
 		}
 		/**
 		* Screenshot candidates for a plugin: the registry's curated list when
 		* present, otherwise lazily extracted and semantically ranked from README.
 		*/
 		function pluginScreenshotCandidates(plugin) {
-			const curated = safeScreenshots(plugin.screenshots);
+			const refused = [];
+			const curated = safeScreenshots(plugin.screenshots, { onReject: (rejection) => {
+				refused.push(rejection);
+			} });
+			if (refused.length > 0) warnRefusedCuratedScreenshots(plugin, refused);
 			if (curated.length > 0) return Promise.resolve(curated.map((src, order) => ({
 				src,
 				order,
