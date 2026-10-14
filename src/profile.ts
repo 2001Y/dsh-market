@@ -894,7 +894,8 @@ export function parsePatchRows(text: string): { names: string[]; ids: string[]; 
     // `insert:` indentation closes the block — those target OTHER plugins.
     let insertIndent: number | null = null
     // Indent of a `config:` key whose value is payload, not more rows.
-    // Everything deeper than it is data, and its `id:` keys live in another
+    // Everything deeper than it — and a `- ` at its own column, a sequence
+    // YAML lets sit unindented under its key — is data, and its `id:` keys live in another
     // namespace (#841): a preset row writes `config.plugins[].id` for the
     // entries it will instantiate, so two bundles that instantiate the same
     // official plugins read as two bundles inserting the same entry ids —
@@ -947,17 +948,22 @@ export function parsePatchRows(text: string): { names: string[]; ids: string[]; 
       }
       return false
     }
-    /** Whether the key at `keyIndent` holds a block sequence. */
+    /**
+     * Whether the key at `keyIndent` holds a block sequence. YAML lets that
+     * sequence sit at the key's own column (`config:` then `- id:` without
+     * further indent), so a `- ` there is the value, not a sibling.
+     */
     const valueIsList = (from: number, keyIndent: number): boolean => {
-      for (let j = from + 1; j < rows.length; j++) {
-        if (rows[j].indent <= keyIndent) return false
-        return rows[j].trimmed === '-' || rows[j].trimmed.startsWith('- ')
-      }
-      return false
+      const next = from + 1
+      if (next >= rows.length || rows[next].indent < keyIndent) return false
+      return isDash(next)
     }
     for (let i = 0; i < rows.length; i++) {
       const { line, trimmed, indent } = rows[i]
-      if (payloadIndent !== null && indent <= payloadIndent) payloadIndent = null
+      // A `- ` at the payload key's own column is still that key's value.
+      if (payloadIndent !== null && indent <= payloadIndent && !(indent === payloadIndent && isDash(i))) {
+        payloadIndent = null
+      }
       if (insertIndent !== null && indent <= insertIndent && !/^\s*-?\s*(id|name|config):/u.test(line)) {
         insertIndent = null
       }
