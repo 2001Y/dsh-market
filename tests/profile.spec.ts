@@ -1253,6 +1253,54 @@ describe('parsePatchRows — an insert row\'s payload is not a loader entry (#84
     ].join('\n')
     expect(parsePatchRows(tagged).insertedIds).toEqual(['a', 'b'])
   })
+
+  it('reads a list written at its key\'s own column as that key\'s value', () => {
+    // YAML lets a block sequence sit at its key's column instead of one level
+    // in. Read as a sibling, the payload ended at its first item and the
+    // item's id counted as a row this package inserts — #841 again.
+    const rows = (compact: boolean): string => [
+      '- insert:',
+      '    - id: plain',
+      '      name: p',
+      '      config:',
+      `${compact ? '      ' : '        '}- id: payload-id`,
+      `${compact ? '        ' : '          '}name: x`,
+      '    - id: next',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(rows(false)).insertedIds).toEqual(['plain', 'next'])
+    expect(parsePatchRows(rows(true)).insertedIds).toEqual(['plain', 'next'])
+  })
+
+  it('still reads a group\'s children when its config list sits at the key\'s column', () => {
+    // The other side of the same rule: a group's list config holds rows
+    // however it is indented.
+    const compactGroup = [
+      '- insert:',
+      '    - id: group-x',
+      '      group: true',
+      '      config:',
+      '      - id: real-child',
+      '        name: some-plugin',
+      '      - id: second-child',
+      '    - id: next',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(compactGroup).insertedIds).toEqual(['group-x', 'real-child', 'second-child', 'next'])
+  })
+
+  it('reads a compact list under any other key as data too', () => {
+    const compactTags = [
+      '- insert:',
+      '    - id: a',
+      '      tags:',
+      '      - id: tag-one',
+      '      name: z',
+      '    - id: b',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(compactTags).insertedIds).toEqual(['a', 'b'])
+  })
 })
 
 describe('conflictingEntryIds (#122)', () => {
@@ -1322,6 +1370,34 @@ describe('conflictingEntryIds (#122)', () => {
         `- insert:\n    - id: ${row}\n      name: cordis:group\n      group: true\n      config:\n        - id: ${child}\n          name: some-plugin\n`
       bundle(dir, 'incumbent', group('group-a', 'real-child'))
       bundle(dir, 'newcomer', group('group-b', 'real-child'))
+      expect(conflictingEntryIds(dir, 'newcomer', ['incumbent']))
+        .toEqual([{ id: 'real-child', owner: 'incumbent' }])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not flag a payload id written as a list at its key\'s column', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dshm-clash-'))
+    try {
+      // One bundle inserts `persona`; the other only names `persona` in its
+      // preset payload, written without the extra indent. The host has one
+      // `persona` entry, so the newcomer must not be refused over it.
+      bundle(dir, 'other-plugin', '- insert:\n    - id: persona\n      name: other-plugin\n')
+      bundle(dir, 'preset-a', "- insert:\n    - id: preset-a\n      name: '@deepseek-ai/dsh-agent-preset'\n      config:\n      - id: persona\n        name: '@deepseek-ai/dsh-persona'\n")
+      expect(conflictingEntryIds(dir, 'preset-a', ['other-plugin'])).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('still flags a group child collision when the child list sits at the key\'s column', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dshm-clash-'))
+    try {
+      const group = (row: string): string =>
+        `- insert:\n    - id: ${row}\n      name: cordis:group\n      group: true\n      config:\n      - id: real-child\n        name: some-plugin\n`
+      bundle(dir, 'incumbent', group('group-a'))
+      bundle(dir, 'newcomer', group('group-b'))
       expect(conflictingEntryIds(dir, 'newcomer', ['incumbent']))
         .toEqual([{ id: 'real-child', owner: 'incumbent' }])
     } finally {
