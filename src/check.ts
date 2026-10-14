@@ -937,6 +937,33 @@ export function composeLayers(layers: LayerInput[]): Composed {
   return { rows, resolvableRows, duplicates, overrides, orphans }
 }
 
+/**
+ * Whether two rows sharing one loader id still stop the boot (#853).
+ *
+ * It depends on the loader, and the loader changed: up to
+ * `cordis-plugin-loader@1.0.3` `EntryGroup.update` threw
+ * `duplicate loader entry id` for a config array holding one id twice
+ * (measured against the published packages — 1.0.3 has the throw, 1.0.4 and
+ * 1.0.5 do not). From 1.0.4 the same array is folded into a Map keyed by id,
+ * so the LATER row wins and the earlier one is silently dropped.
+ *
+ * The market's rule was written against the old loader (#122: two bundles on
+ * one id really did refuse to start), and it is right on one. On a new one it
+ * is not a boot failure but a silent override — which is worth SAYING and not
+ * worth refusing every operation over. The reported shape is a package's own
+ * patch row plus a user-patch row on the same id: fatal forever meant every
+ * update of every plugin rolled back.
+ *
+ * Unknown version stays fatal: the conservative direction, and the case where
+ * the evidence to be less strict is missing.
+ */
+export function duplicateEntryIdsAreFatal(profileDirectory: string): boolean {
+  const versions = lockfileCoreVersions(profileDirectory).get('@deepseek-ai/cordis-plugin-loader') ?? []
+  if (versions.length === 0) return true
+  const newest = versions.reduce((a, b) => (compareSemver(a, b) >= 0 ? a : b))
+  return compareSemver(newest, '1.0.4') < 0
+}
+
 /** Distinct versions of `@deepseek-ai/{dsh,cordis}*` packages in the lockfile. */
 function lockfileCoreVersions(profileDir: string): Map<string, string[]> {
   const found = new Map<string, Set<string>>()
@@ -1509,8 +1536,16 @@ export function analyzeProfile(profileDirectory: string, options: CheckOptions =
     if (row.activation === 'required') errors.push(`${message} — the profile will fail to boot`)
     else warnings.push(`${message} — boot will fail if its disabled expression enables the entry`)
   }
+  // Rows on one id: a boot failure on an old loader, a silent override on a
+  // new one (see duplicateEntryIdsAreFatal). Refusing an operation over the
+  // second shape rolled back every update for the reporter's profile.
+  const duplicateFatal = duplicateEntryIdsAreFatal(profileDirectory)
   for (const dup of composed.duplicates) {
-    errors.push(`duplicate loader entry id ${JSON.stringify(dup.id)} (${dup.count} rows: ${dup.layers.join(', ')})`)
+    if (duplicateFatal) {
+      errors.push(`duplicate loader entry id ${JSON.stringify(dup.id)} (${dup.count} rows: ${dup.layers.join(', ')})`)
+      continue
+    }
+    warnings.push(`${dup.layers.join(' 与 ')}：同一个条目 id ${JSON.stringify(dup.id)} 各有 ${String(dup.count)} 行，当前宿主会让后一层覆盖前一层，启动不受影响，但前面那行会静默失效——删除其中一行即可消除歧义 / the layers ${dup.layers.join(' and ')} each declare entry id ${JSON.stringify(dup.id)} (${String(dup.count)} rows); this host lets the LATER row win, so the boot is fine but the earlier row is silently dropped — remove one of them to make the intent unambiguous`)
   }
   for (const orphan of composed.orphans) {
     warnings.push(`${orphan.layer}: ${orphan.id} — ${orphan.reason}`)

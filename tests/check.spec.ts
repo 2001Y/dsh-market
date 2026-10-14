@@ -1027,6 +1027,74 @@ describe('duplicate loader entry ids (#98 boot failure)', () => {
   })
 })
 
+describe('one loader id on two rows depends on the loader (#853)', () => {
+  /** The reported shape: a bundle's own row plus the user's row on one id. */
+  function twoRowsOnOneId(dir: string): void {
+    writeProfile(dir, {
+      dsh: { profile: { bundles: ['@deepseek-ai/dsh-base'] } },
+      dependencies: { '@deepseek-ai/dsh-base': '^4.0.1' },
+    })
+    writeBundle(dir, '@deepseek-ai/dsh-base', '4.0.1', [
+      { insert: [{ id: 'dsh-market', name: 'dshmarket' }] },
+    ])
+    writeFileSync(join(dir, 'cordis.patch.yml'), dump([
+      { insert: [{ id: 'dsh-market', name: 'file:///profile/node_modules/dshmarket/lib/index.js' }] },
+    ]))
+  }
+
+  /** A lockfile naming the loader, the way a real profile has one. */
+  function lockWithLoader(dir: string, version: string): void {
+    writeFileSync(join(dir, 'pnpm-lock.yaml'), [
+      "lockfileVersion: '9.0'",
+      'packages:',
+      `  '@deepseek-ai/cordis-plugin-loader@${version}':`,
+      `    version: ${version}`,
+      '',
+    ].join('\n'))
+  }
+
+  it('is a warning on a loader that folds the id instead of refusing it', () => {
+    // Measured against the published packages: 1.0.3 throws
+    // `duplicate loader entry id`, 1.0.4 and 1.0.5 fold the array into a Map
+    // and let the LATER row win. The reporter's profile already had this pair,
+    // so treating it as fatal rolled back every update — of every plugin —
+    // forever, over a boot that works.
+    const dir = pdir()
+    twoRowsOnOneId(dir)
+    lockWithLoader(dir, '1.0.5')
+
+    const report = analyzeProfile(dir, { dshInstallDir: dir })
+
+    expect(report.summary.errors.some(e => e.includes('duplicate loader entry id'))).toBe(false)
+    expect(report.summary.ok).toBe(true)
+    // Still SAID: on this loader one of the two rows quietly loses.
+    const warning = report.summary.warnings.find(w => w.includes('dsh-market'))
+    expect(warning).toBeDefined()
+    expect(String(warning)).toContain('"dsh-market"')
+    expect(String(warning)).toMatch(/后一层覆盖前一层|LATER row wins/)
+  })
+
+  it('stays fatal on a loader that still refuses it — the version this rule was written for', () => {
+    const dir = pdir()
+    twoRowsOnOneId(dir)
+    lockWithLoader(dir, '1.0.3')
+
+    const report = analyzeProfile(dir, { dshInstallDir: dir })
+
+    expect(report.summary.errors.some(e => e.includes('duplicate loader entry id'))).toBe(true)
+    expect(report.summary.ok).toBe(false)
+  })
+
+  it('stays fatal when no version can be read, because the evidence to relax is missing', () => {
+    const dir = pdir()
+    twoRowsOnOneId(dir)
+
+    const report = analyzeProfile(dir, { dshInstallDir: dir })
+
+    expect(report.summary.errors.some(e => e.includes('duplicate loader entry id'))).toBe(true)
+  })
+})
+
 describe('duplicate loader entry names (#98 opt: runtime shadowing)', () => {
   it('reports two rows sharing one name across layers — informational, not a boot failure and not a summary warning', () => {
     const dir = pdir()
