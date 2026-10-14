@@ -780,6 +780,7 @@ import { resolveChannel } from '../src/channels.ts'
 import { profileDir } from '../src/profile.ts'
 import { runDshPlugin } from '../src/dsh-cli.ts'
 import { createOfficialDesktopRuntime } from '../src/official-desktop.ts'
+import { routesFor } from '../src/regions.ts'
 import { setRequestGateSource, setTrustedHostsSource } from '../src/http.ts'
 import type { AgentsServiceLike } from '../src/agents.ts'
 
@@ -2132,6 +2133,80 @@ describe('install flow', () => {
     const listed = await bed.dispatch('GET', '/dsh-market/installed')
     expect(listed.json.diagnostics.schema).toBe('dsh-market/diagnostics/v1')
     expect(listed.json.diagnostics.findings).toEqual([])
+  })
+})
+
+describe('official Desktop download region (#862)', () => {
+  afterEach(() => vi.unstubAllEnvs())
+
+  it('switches the existing runtime via the region route and preserves install, update, rollback and uninstall', async () => {
+    vi.stubEnv('DSHM_NPM_MIRROR', '')
+    fake.npm['dsh-loop'] = {
+      latest: '1.0.0',
+      versions: {
+        '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+        '1.2.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+      },
+    }
+    const service = {
+      installBundle: vi.fn(async (spec: string) => {
+        const ran = await runDshPlugin('desktop', ['add', spec])
+        return {
+          application: ran.exitCode === 0 ? 'restart-required' : 'failed',
+          error: ran.stderr,
+          packageResult: { exitCode: ran.exitCode, output: ran.stdout },
+        }
+      }),
+      removeBundle: vi.fn(async (name: string) => {
+        const ran = await runDshPlugin('desktop', ['remove', name])
+        return { application: ran.exitCode === 0 ? 'applied' : 'failed', packageResult: { exitCode: ran.exitCode } }
+      }),
+      cancelInstall: vi.fn(async () => ({ status: 'cancelled' })),
+    }
+    const runtime = createOfficialDesktopRuntime(() => service, 'web', profileDir('web'))
+    bed.dispose()
+    bed = createTestbed({ desktopHost: true }, runtime)
+    // Both registry routes answer from the fixture; no real mirror is queried.
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      const registry = routesFor('china', {}).npmRegistry
+      if (!String(url).startsWith(registry) && !String(url).startsWith(routesFor('global', {}).npmRegistry)) {
+        throw new Error(`unexpected fetch: ${url}`)
+      }
+      const version = fake.npm['dsh-loop'].latest
+      return new Response(JSON.stringify(String(url).endsWith('/latest') ? { version } : {
+        'dist-tags': { latest: version },
+        time: { [version]: new Date(Date.now() - 48 * 3_600_000).toISOString() },
+      }), { status: 200 })
+    }))
+
+    const installed = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+    expect(installed.status).toBe(200)
+    expect(service.installBundle).toHaveBeenLastCalledWith('dsh-loop@1.0.0', { requestId: expect.any(String) })
+    expect(installedSpec('dsh-loop')).toBe('^1.0.0')
+
+    expect((await bed.dispatch('POST', '/dsh-market/region', { region: 'china' })).status).toBe(200)
+    fake.npm['dsh-loop'].latest = '1.2.0'
+    fake.failAfterWriteStderrOnce = 'ELIFECYCLE: failed after replacing the package directory'
+    service.installBundle.mockClear()
+    const failed = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+    expect(failed.status).toBe(502)
+    expect(service.installBundle.mock.calls).toEqual([
+      ['dsh-loop@1.2.0', { requestId: expect.any(String), registry: routesFor('china', {}).npmRegistry }],
+      ['dsh-loop@1.0.0', { requestId: expect.any(String), registry: routesFor('china', {}).npmRegistry }],
+    ])
+    expect(installedSpec('dsh-loop')).toBe('^1.0.0')
+    expect(JSON.parse(readFileSync(join(fake.profileDir, 'node_modules', 'dsh-loop', 'package.json'), 'utf8')).version).toBe('1.0.0')
+
+    expect((await bed.dispatch('POST', '/dsh-market/region', { region: 'global' })).status).toBe(200)
+    const updated = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+    expect(updated.status).toBe(200)
+    expect(service.installBundle).toHaveBeenLastCalledWith('dsh-loop@1.2.0', { requestId: expect.any(String) })
+    expect(installedSpec('dsh-loop')).toBe('^1.2.0')
+    const removed = await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'dsh-loop' })
+    expect(removed.status).toBe(200)
+    expect(service.removeBundle.mock.calls).toEqual([['dsh-loop']])
+    expect(installedSpec('dsh-loop')).toBeUndefined()
+    await runtime.dispose()
   })
 })
 

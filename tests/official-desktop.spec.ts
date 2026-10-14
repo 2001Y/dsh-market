@@ -1,10 +1,16 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createOfficialDesktopRuntime, type OfficialPluginManagerLike } from '../src/official-desktop.ts'
+import { routesFor, setActiveRegion } from '../src/regions.ts'
 
 const roots: string[] = []
+
+beforeEach(() => {
+  vi.stubEnv('DSHM_NPM_MIRROR', '')
+  setActiveRegion('global')
+})
 
 function profile(): string {
   const dir = mkdtempSync(join(tmpdir(), 'dshm-official-'))
@@ -14,6 +20,8 @@ function profile(): string {
 }
 
 afterEach(() => {
+  setActiveRegion('global')
+  vi.unstubAllEnvs()
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -35,6 +43,65 @@ describe('official Electron profile runtime', () => {
     const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
     await expect(runtime.runPlugin('desktop', ['add', 'example@2.0.0'])).resolves.toMatchObject({ exitCode: 0, stdout: 'installed' })
     expect(service.installBundle).toHaveBeenCalledWith('example@2.0.0', { requestId: expect.any(String) })
+    await runtime.dispose()
+  })
+
+  it('uses the current market mirror for installs, update targets and exact rollback targets (#862)', async () => {
+    setActiveRegion('china')
+    const service = manager()
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    for (const target of ['example', 'example@2.0.0', 'example@1.0.0']) {
+      await expect(runtime.runPlugin('desktop', ['add', target])).resolves.toMatchObject({ exitCode: 0 })
+      expect(service.installBundle).toHaveBeenLastCalledWith(target, {
+        requestId: expect.any(String), registry: routesFor('china', {}).npmRegistry,
+      })
+    }
+    await runtime.dispose()
+  })
+
+  it('applies region switches to the next install without recreating the runtime (#862)', async () => {
+    const service = manager()
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    for (const region of ['global', 'china', 'global', 'china'] as const) {
+      setActiveRegion(region)
+      await runtime.runPlugin('desktop', ['add', 'example@2.0.0'])
+      expect(service.installBundle).toHaveBeenLastCalledWith('example@2.0.0', {
+        requestId: expect.any(String),
+        ...(region === 'global' ? {} : { registry: routesFor(region, {}).npmRegistry }),
+      })
+    }
+    await runtime.dispose()
+  })
+
+  it('uses the same npm mirror override as market requests (#862)', async () => {
+    setActiveRegion('china')
+    vi.stubEnv('DSHM_NPM_MIRROR', 'https://npm.example.test/custom/')
+    const service = manager()
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    await runtime.runPlugin('desktop', ['add', '@scope/example@2.0.0'])
+    expect(service.installBundle).toHaveBeenCalledWith('@scope/example@2.0.0', {
+      requestId: expect.any(String), registry: 'https://npm.example.test/custom',
+    })
+    await runtime.dispose()
+  })
+
+  it('keeps removal and cancellation on their existing manager APIs with a mirror selected', async () => {
+    setActiveRegion('china')
+    const service = manager()
+    let finish!: (result: { application: string }) => void
+    service.installBundle.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    const installing = runtime.runPlugin('desktop', ['add', 'example@2.0.0'])
+    const options = service.installBundle.mock.calls[0]![1] as { requestId: string }
+    expect(options.requestId).toEqual(expect.any(String))
+    expect(runtime.cancelActive()).toBe(true)
+    expect(service.cancelInstall).toHaveBeenCalledWith(options.requestId)
+    finish({ application: 'cancelled' })
+    await expect(installing).resolves.toMatchObject({ exitCode: 1, cancelled: true })
+    await expect(runtime.runPlugin('desktop', ['remove', 'example'])).resolves.toMatchObject({ exitCode: 0 })
+    expect(service.removeBundle).toHaveBeenCalledWith('example')
+    expect(service.removeBundle.mock.calls[0]).toEqual(['example'])
+    expect(runtime.cancelActive()).toBe(false)
     await runtime.dispose()
   })
 
