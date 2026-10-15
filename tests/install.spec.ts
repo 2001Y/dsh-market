@@ -626,6 +626,26 @@ describe('withHoistRecovery', () => {
     })
   })
 
+  it('tells a desktop user on the fresh-release wait when the button starts working (#852)', async () => {
+    // "no retry happened" is not an answer here: the plugin IS published, pnpm
+    // simply will not take it yet, and the door a plain `dsh web` host would
+    // open is shut on the official desktop app. The reporter had updates AND
+    // uninstalls failing with nothing to do about either.
+    const run = async (): Promise<InstallResult> => ({ exitCode: 1, timedOut: false, stdout: '', stderr: AGE_VIOLATION_STDERR, cancelled: false })
+    const result = await withHoistRecovery(run, 'desktop', ['add', 'thing'], undefined, { marketFlags: false })
+    expect(result.stderr).toContain('等这个版本过了等待期再更新一次即可')
+    expect(result.stderr).toContain('dsh web')
+    expect(result.stderr).toContain('没有自动重试')
+  })
+
+  it('keeps the plain "no retry" note for a skipped step that is not the wait', async () => {
+    const run = async (): Promise<InstallResult> => ({ exitCode: 1, timedOut: false, stdout: '', stderr: 'ERR_PNPM_PUBLIC_HOIST_PATTERN_DIFF', cancelled: false })
+    const result = await withHoistRecovery(run, 'desktop', ['add', 'thing'], undefined, { marketFlags: false })
+    expect(result.stderr).toContain('没有自动重试')
+    expect(result.stderr).toContain('--no-frozen-lockfile')
+    expect(result.stderr).not.toContain('过了等待期')
+  })
+
   it('still uses the one-shot override where the host accepts options', async () => {
     const calls: string[][] = []
     const run = async (_profile: string, args: string[]): Promise<InstallResult> => {
@@ -932,6 +952,26 @@ describe("pnpm's own error survives to the surface (#244/#192/#138)", () => {
   it('uses stdout when stderr is empty, as before', () => {
     expect(failureDetail({ ...base, stderr: '', stdout: 'something on stdout' }))
       .toBe('something on stdout')
+  })
+
+  it('cuts a long tail at a sentence end, and says something was dropped (#852)', () => {
+    // The shape that reached a user's UI: the market appends its own
+    // explanation to pnpm's output, and the 300-character tail used to land
+    // inside the middle sentence — the log read
+    // "（is, export the log and report it这台宿主…", a fragment of one sentence
+    // welded to the next. Two things have to hold: the cut starts at a
+    // sentence, and the reader is told the front is missing.
+    const explanation = 'a recently-published plugin version in this profile trips the fresh-release check, blocking any change (even to other plugins); the market retries once with a one-shot bypass — if you still see this, export the log and report it'
+    const note = '这台宿主（官方桌面端）自己执行安装，不接受市场附加的 pnpm 参数（--config.minimum-release-age=0），所以这一步没有自动重试。 / This host (the official desktop app) runs the install itself and takes no pnpm options from the market (--config.minimum-release-age=0), so that automatic retry could not be attempted.'
+    const detail = failureDetail({ ...base, stderr: `${explanation}\n\n${note}` })
+    expect(detail.startsWith('…')).toBe(true)
+    expect(detail).not.toContain('it这台宿主')
+    expect(detail.endsWith('so that automatic retry could not be attempted.')).toBe(true)
+  })
+
+  it('marks a tail with no sentence boundary rather than pretending it is whole', () => {
+    const blob = 'x'.repeat(500)
+    expect(failureDetail({ ...base, stderr: blob })).toBe(`…${blob.slice(-300)}`)
   })
 
   it('appends pnpm\'s own words when nothing classified the failure', async () => {
