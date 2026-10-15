@@ -4,6 +4,7 @@
  */
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { releaseHostUndiciDispatcher } from '../src/net.ts'
 
@@ -35,11 +36,15 @@ describe('the market leaves the host its own dispatcher (#861)', () => {
     // A fresh process, because the symbols are process-wide and undici only
     // installs on import: in a reused one, `.2` is already decided and the
     // assertion would pass whatever this module does.
+    // A file:// URL, not a path: the child is a separate ESM loader, and on
+    // Windows `D:\...` is ERR_UNSUPPORTED_ESM_URL_SCHEME (measured on the
+    // Windows CI leg — this test passed on Linux while that leg was red).
+    const moduleUrl = pathToFileURL(join(import.meta.dirname, '..', 'src', 'net.ts')).href
     const script = `
       const legacy = Symbol.for('undici.globalDispatcher.1')
       const v8 = Symbol.for('undici.globalDispatcher.2')
       const before = { legacy: globalThis[legacy], v8: globalThis[v8] }
-      await import(${JSON.stringify(join(import.meta.dirname, '..', 'src', 'net.ts'))})
+      await import(${JSON.stringify(moduleUrl)})
       const { Agent } = await import('undici')
       process.stdout.write(JSON.stringify({
         cleanStart: before.legacy === undefined && before.v8 === undefined,
@@ -55,7 +60,9 @@ describe('the market leaves the host its own dispatcher (#861)', () => {
       cwd: join(import.meta.dirname, '..'),
       encoding: 'utf8',
     })
-    expect(result.stderr).toBe('')
+    // Not `toBe('')`: on Node 24 the child may announce type stripping on
+    // stderr, and that is not a failure. An `Error` is.
+    expect(result.stderr).not.toContain('Error')
     const seen = JSON.parse(result.stdout) as Record<string, boolean>
     // If this is false the run proves nothing, so it fails rather than passes
     // vacuously: something in the process had already claimed a symbol.
