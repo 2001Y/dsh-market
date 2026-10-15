@@ -15245,6 +15245,17 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			}
 			const iconGaps = missingIcons(mod);
 			if (iconGaps.length > 0) console.warn("[dsh-market] host ui-primitives missing icons " + iconGaps.join(", ") + " — rendering without them");
+			try {
+				mountMarket(ctx);
+			} catch (error) {
+				console.error("[dsh-market] mounting failed, so the market is missing for this session. The rest of the app is unaffected. Report at https://github.com/dsh-market/dsh-market/issues with this line and the stack below:", error);
+			}
+		}
+		/**
+		* The market's mounts, split out only so apply() can contain a throw from any
+		* of them. Not exported: the split is a guard, not a surface.
+		*/
+		function mountMarket(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, {
 				zh,
 				en

@@ -4,7 +4,7 @@
  * (the module itself resolves, so the bundle factory succeeds). apply()
  * must detect the gap and skip registration instead of throwing mid-render.
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { apply, missingPrimitives, REQUIRED_PRIMITIVES } from '../../src/client/index.ts'
 import { ICON_ALIASES, missingIcons } from '../../src/client/icons.ts'
 
@@ -98,4 +98,74 @@ it('places the settings card on the bundle page a 0.1.7 host declares (#677)', (
   const { registrations, injections } = hostWith(['settings.section', 'shell.overlay', 'plugins.bundle.config'])
   expect(injections).toEqual([['settingsScope']])
   expect(registrations).toEqual(['settings.section', 'plugins.bundle.config', 'shell.overlay'])
+})
+
+/**
+ * #869: the loader runs a client plugin's factory on the boot path, so a
+ * throw inside apply() is a throw inside the shell's own bootstrap and takes
+ * the whole app down (reported on the Desktop shell). Whatever the cause
+ * turns out to be, the market hosting itself in someone else's app must not
+ * be able to kill it.
+ */
+describe('apply() contains a throw from the host (#869)', () => {
+  /** A host whose registration of the market's main section throws. */
+  function hostWhoseSectionRegistrationThrows() {
+    return {
+      effect: (run: () => unknown) => { run() },
+      on: () => () => {},
+      locale: {
+        register: () => () => {}, bind: () => (key: string) => key,
+        subscribe: () => () => {}, getSnapshot: () => ({ active: 'en' }),
+      },
+      theme: { getTheme: () => null, setTheme: () => {} },
+      slots: {
+        inject: (slot: string, register: () => unknown) => { if (slot === 'settings.section') register() },
+        register: (options: Record<string, unknown>) => {
+          if (options.name === 'settings.section') throw new Error('host refused the section')
+          return () => {}
+        },
+      },
+      inject: () => {},
+    } as Parameters<typeof apply>[0]
+  }
+
+  it('does not let the throw escape into the shell, and says so on the console', () => {
+    const logged: unknown[][] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { logged.push(args) })
+    try {
+      expect(() => apply(hostWhoseSectionRegistrationThrows())).not.toThrow()
+    } finally {
+      spy.mockRestore()
+    }
+    expect(logged).toHaveLength(1)
+    expect(String(logged[0][0])).toContain('[dsh-market] mounting failed')
+    // The error object rides along so the console holds the stack, not just
+    // a sentence about it.
+    expect(logged[0][1]).toBeInstanceOf(Error)
+  })
+
+  it('contains a throw from any mount point, not just the first one that fires', () => {
+    // Containment is the outer try/catch, so a failure while mounting the
+    // overlay toast is caught exactly like the section's. If this ever moves
+    // to per-call guards, this test is what fails.
+    const host = hostWhoseSectionRegistrationThrows()
+    const slots = host.slots as {
+      inject: (slot: string, register: () => unknown) => void
+      register: (options: Record<string, unknown>) => unknown
+    }
+    slots.inject = (slot: string, register: () => unknown) => {
+      if (slot === 'shell.overlay') register()
+    }
+    slots.register = () => { throw new Error('host refused the overlay') }
+
+    const logged: unknown[][] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { logged.push(args) })
+    try {
+      expect(() => apply(host)).not.toThrow()
+    } finally {
+      spy.mockRestore()
+    }
+    expect(logged).toHaveLength(1)
+    expect(String(logged[0][0])).toContain('[dsh-market] mounting failed')
+  })
 })
