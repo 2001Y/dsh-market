@@ -6721,6 +6721,65 @@ describe('generic enable/disable toggle (#60)', () => {
     expect(on.json.activation['dsh-loop'].state).toBe('live')
   })
 
+  it('does not call a package disabled over a row it ships switched off itself (#876)', async () => {
+    // The report's shape: dsh-mnemon ships four `mnemon-strategy-*` rows as
+    // opt-in, and the user patch layer repeats ONE of them (a restored
+    // backup did). The card said 「已停用 / 重启后保持关闭」 about a plugin
+    // that was running, and its enable button then force-opened the other
+    // opt-in rows — "stays off until selected" rows switched on by a bug fix.
+    await installNpm('dsh-loop')
+    mkdirSync(join(fake.profileDir, 'node_modules', 'dsh-loop'), { recursive: true })
+    writeFileSync(join(fake.profileDir, 'node_modules', 'dsh-loop', 'cordis.patch.yml'), [
+      '- insert:',
+      '    - id: loop-core',
+      '      name: dsh-loop',
+      '    - id: loop-opt-in',
+      '      name: dsh-loop-opt-in',
+      '      disabled: true',
+      '',
+    ].join('\n'))
+    const patchPath = join(fake.profileDir, 'cordis.patch.yml')
+    writeFileSync(patchPath, '- id: loop-opt-in\n  disabled: true\n')
+
+    const listed = await bed.dispatch('GET', '/dsh-market/installed')
+    expect(listed.json.patch?.disables).toContain('loop-opt-in')
+    expect(listed.json.patchDisabled).not.toContain('dsh-loop')
+    expect(listed.json.activation['dsh-loop'].state).not.toBe('disabled')
+
+    // Turning the package on cleans the block its earlier disable left on the
+    // opt-in row, and never force-enables one: no `disabled: false` appears.
+    const on = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-loop', enabled: true })
+    expect(on.status).toBe(200)
+    expect(on.json.activation['dsh-loop'].state).not.toBe('disabled')
+    const written = readFileSync(patchPath, 'utf8')
+    // The stale block on the opt-in row is gone...
+    expect(written).not.toContain('loop-opt-in')
+    // ...and that row was NOT force-enabled. The package's own row still gets
+    // its `disabled: false` (enableRow's standing behaviour), so exactly one
+    // such block means the opt-in row never reached that path.
+    expect(written.match(/disabled: false/gu)).toHaveLength(1)
+  })
+
+  it('still switches a package off through its own rows, opt-in or not', async () => {
+    // The other half: a disable has to reach every row, or the package comes
+    // back half-on.
+    await installNpm('dsh-loop')
+    mkdirSync(join(fake.profileDir, 'node_modules', 'dsh-loop'), { recursive: true })
+    writeFileSync(join(fake.profileDir, 'node_modules', 'dsh-loop', 'cordis.patch.yml'), [
+      '- insert:',
+      '    - id: loop-core',
+      '      name: dsh-loop',
+      '    - id: loop-opt-in',
+      '      name: dsh-loop-opt-in',
+      '      disabled: true',
+      '',
+    ].join('\n'))
+    await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-loop', enabled: false })
+    const patch = readFileSync(join(fake.profileDir, 'cordis.patch.yml'), 'utf8')
+    expect(patch).toContain('loop-core')
+    expect(patch).toContain('loop-opt-in')
+  })
+
   it('toggles a bundle-layer entry through setEntryDisabled', async () => {
     fake.repos['github:o/blue-whale'] = {
       name: 'dsh-blue-whale',

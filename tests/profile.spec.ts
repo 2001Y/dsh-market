@@ -10,7 +10,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { resolveDshHome } from '../src/home-paths.ts'
 import {
-  addProfileBundle, bundlePatchInsertedIds, bundlesDroppedFromProfile, readProfileManifestSnapshot, bundlePatchTargets, conflictingEntryIds, declaredBundlePatchFiles, dropFromManifest, entryArtifactExists, generationManagedNames, hasDshManifest, hasLoadableEntry, holdsNativeAddon, isDshProfileName, mergeDuplicateReleaseAgeExcludes, parsePatchRows, pluginSubdirs, profileDir,
+  addProfileBundle, bundleOptOutRowIds, bundlePatchInsertedIds, bundlesDroppedFromProfile, readProfileManifestSnapshot, bundlePatchTargets, conflictingEntryIds, declaredBundlePatchFiles, dropFromManifest, entryArtifactExists, generationManagedNames, hasDshManifest, hasLoadableEntry, holdsNativeAddon, isDshProfileName, mergeDuplicateReleaseAgeExcludes, parsePatchRows, pluginSubdirs, profileDir,
   readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledRepoEvidence, readInstalledRepoIdentities, readInstalledVersion, readLockCommits,
   removeProfileBundle,
 } from '../src/profile.ts'
@@ -1931,5 +1931,93 @@ describe('generationManagedNames (#874)', () => {
   it('ignores a malformed projection list instead of throwing', () => {
     writeProfile({ dependencies: {}, dsh: { desktop: { generationProjection: { plugins: 'dsh-loop' } } } })
     expect([...generationManagedNames('web')]).toEqual([])
+  })
+})
+
+describe('parsePatchRows — the rows a patch ships switched off (#876)', () => {
+  it('reads an opt-in row whose keys sit between id and disabled', () => {
+    // dsh-mnemon's real shape: `id`, then `name`, then `disabled: true`. The
+    // line scanner the market uses for the USER layer requires `disabled` on
+    // the very next line, so it never saw these; the row parser has to.
+    const optIn = [
+      '- id: mnemon-strategy-general',
+      '  name: dsh-mnemon-strategy-general',
+      '# an inserted comment must not end the row',
+      '  disabled: true',
+      '- id: mnemon',
+      '  name: dsh-mnemon',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(optIn).disabledIds).toEqual(['mnemon-strategy-general'])
+  })
+
+  it('reads an opt-in row nested inside an insert block', () => {
+    const nested = [
+      '- insert:',
+      '    - id: off-by-default',
+      '      name: some-strategy',
+      '      disabled: true',
+      '    - id: on-by-default',
+      '      name: some-core',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(nested).disabledIds).toEqual(['off-by-default'])
+  })
+
+  it('never counts disabled: false, and never counts a payload id (#841)', () => {
+    const rows = [
+      '- insert:',
+      '    - id: forced-on',
+      '      name: forced-plugin',
+      '      disabled: false',
+      '    - id: preset-a',
+      '      name: cordis:preset',
+      '      config:',
+      '        plugins:',
+      '          - id: payload-entry',
+      '            name: payload-plugin',
+      '            disabled: true',
+      '',
+    ].join('\n')
+    expect(parsePatchRows(rows).disabledIds).toEqual([])
+  })
+})
+
+describe('bundleOptOutRowIds (#876)', () => {
+  it('reads both patch sources a package may ship', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dshm-optout-'))
+    try {
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({
+        name: 'dsh-mnemon',
+        dsh: { bundle: { patch: './cordis.patch.yml' } },
+      }))
+      writeFileSync(join(dir, 'cordis.patch.yml'), [
+        '- insert:',
+        '    - id: mnemon',
+        '      name: dsh-mnemon',
+        '    - id: mnemon-strategy-general',
+        '      name: dsh-mnemon-strategy-general',
+        '      disabled: true',
+        '',
+      ].join('\n'))
+      // #792: a declared LIST contributes every file it names.
+      writeFileSync(join(dir, 'extra.patch.yml'), '- id: extra-opt-in\n  disabled: true\n')
+      const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+      manifest.dsh.bundle.patch = ['./cordis.patch.yml', './extra.patch.yml']
+      writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
+      expect([...bundleOptOutRowIds(dir)].sort()).toEqual(['extra-opt-in', 'mnemon-strategy-general'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('answers with nothing for a package that ships no patch', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dshm-optout-'))
+    try {
+      writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'plain' }))
+      expect(bundleOptOutRowIds(dir)).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

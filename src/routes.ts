@@ -31,7 +31,7 @@ import {
   type PluginCommandRuntime,
 } from './dsh-cli.ts'
 import { packageOfEntryName } from './entry-identity.ts'
-import { addProfileBundle, bundlePatchInsertedIds, bundlesDroppedFromProfile, declareProfileDependency, dropFromManifest, generationManagedNames, hasLoadableEntry, holdsNativeAddon, INBOX_BUNDLES, isDshProfileName, profileDir, readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledPackageName, readInstalledRepoEvidence, readInstalledVersion, readLockCommits, readProfileBundles, readProfileManifestSnapshot, removeProfileBundle, restoreProfileManifest, setAllowBuilds, type ProfileManifestSnapshot } from './profile.ts'
+import { addProfileBundle, bundleOptOutRowIds, bundlePatchInsertedIds, bundlesDroppedFromProfile, declareProfileDependency, dropFromManifest, generationManagedNames, hasLoadableEntry, holdsNativeAddon, INBOX_BUNDLES, isDshProfileName, profileDir, readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledPackageName, readInstalledRepoEvidence, readInstalledVersion, readLockCommits, readProfileBundles, readProfileManifestSnapshot, removeProfileBundle, restoreProfileManifest, setAllowBuilds, type ProfileManifestSnapshot } from './profile.ts'
 import { assessProfile, classifyPeer, introducedDuplicateNames, introducedRisks, type CompatibilityRisk } from './compatibility.ts'
 import { runningAgentIds, type AgentsLookup } from './agents.ts'
 import { analyzeProfile, corePackageNames, type DuplicateName } from './check.ts'
@@ -935,6 +935,8 @@ export function mountMarketRoutes(
     ok: boolean
     reason: string | undefined
     patchRows: string[]
+    /** The subset a user decision can be read from (#876). */
+    userRows: string[]
     patchWrite: { ok: boolean; reason: string | null } | null
     disablesOthers: string[]
     isCarrier: boolean
@@ -948,6 +950,18 @@ export function mountMarketRoutes(
     // every boot. Client-only packages have no bundle rows — the
     // market's own state.json replay covers those.
     const patchRows = rowIdsForPackage(host, activeProfileDir, name)
+    // Rows the package ships switched off are the bundle's own default, not
+    // the user's decision (#876). Turning a package ON must not force those
+    // opt-in rows open — `enableRow` answers a row with no `disabled` block
+    // by appending `disabled: false`, and the user layer sits on top, so the
+    // plugin's "stays off until selected" rows would come on silently as a
+    // side effect of a bug fix. Skipped only while something else is left to
+    // flip: a package whose rows are ALL opt-in rows still has to be
+    // switchable.
+    const optOutRows = new Set(bundleOptOutRowIds(join(activeProfileDir, 'node_modules', name)))
+    const decided = patchRows.filter(rowId => !optOutRows.has(rowId))
+    /** Rows that can carry a USER decision about this package — see above. */
+    const userRows = decided.length > 0 ? decided : patchRows
     // Disable-carrier (#224): a bundle whose patch DISABLES a plugin it
     // does not own (dsh-postgres-backends disables session-persistence-jsonl).
     // Disabling only its inserted rows leaves that foreign disable applying
@@ -1019,9 +1033,19 @@ export function mountMarketRoutes(
     // What the row layer said before this call, so a rollback can put
     // each row back the way it was rather than the other way round.
     const prePatch = patchGate ? readUserPatchState(userPatchPath) : null
-    if (patchRows.length > 0 && patchGate) {
+    if (patchRows.length > 0 && patchGate && prePatch !== null) {
+      // Disable touches every row: one left behind leaves the package
+      // half-on. Enable leaves the bundle's own opt-in rows alone — they are
+      // off by the bundle's default, and `enableRow` answers a row with no
+      // block by appending `disabled: false`, which would switch them on as a
+      // side effect of turning the package itself back on (#876) — except to
+      // remove a block an earlier disable left on one, which is a cleanup and
+      // never a force-enable.
+      const targets = enabled
+        ? patchRows.filter(rowId => !optOutRows.has(rowId) || prePatch.disables.includes(rowId))
+        : patchRows
       const flipped: string[] = []
-      for (const rowId of patchRows) {
+      for (const rowId of targets) {
         const result = enabled ? await enableRow(userPatchPath, rowId) : await disableRow(userPatchPath, rowId)
         if (result.ok) {
           flipped.push(rowId)
@@ -1030,9 +1054,9 @@ export function mountMarketRoutes(
         patchWrite = result
         break
       }
-      if (patchWrite === null) {
-        logEvent('info', 'toggle', `${name}: patch layer ${enabled ? 'enabled' : 'disabled'} rows ${patchRows.join(', ')}`)
-      } else {
+      if (patchWrite === null && targets.length > 0) {
+        logEvent('info', 'toggle', `${name}: patch layer ${enabled ? 'enabled' : 'disabled'} rows ${targets.join(', ')}`)
+      } else if (patchWrite !== null) {
         logEvent('warn', 'toggle', `${name}: patch layer write refused — ${patchWrite.reason}`)
         // The two layers move together or neither does (#696): an enable
         // that wrote some of its rows and then met a refusal goes all
@@ -1074,7 +1098,7 @@ export function mountMarketRoutes(
       }
     }
     logEvent(ok ? 'info' : 'error', 'toggle', `${name}: ${enabled ? 'on' : 'off'} ok=${String(ok)}`)
-    return { ok, reason, patchRows, patchWrite, disablesOthers, isCarrier, bundleSwitch }
+    return { ok, reason, patchRows, userRows, patchWrite, disablesOthers, isCarrier, bundleSwitch }
   }
 
   /**
@@ -3239,12 +3263,14 @@ export function mountMarketRoutes(
           const layers = await switchPluginLayers(name, enabled, ok, reason)
           ok = layers.ok
           reason = layers.reason
-          const { patchRows, patchWrite, disablesOthers, isCarrier, bundleSwitch } = layers
+          const { patchRows, userRows, patchWrite, disablesOthers, isCarrier, bundleSwitch } = layers
           // Activation reads the post-write truth: the switch state OR the
           // patch layer, so a disabled plugin never reports "restart to
           // apply".
           const patchNow = readUserPatchState(userPatchPath)
-          const offNow = disabled.has(name) || patchRows.some(id => patchNow.disables.includes(id))
+          // Read from userRows, like the listing (#876): a disabled opt-in row is
+          // the bundle's own default and does not make the package off.
+          const offNow = disabled.has(name) || userRows.some(id => patchNow.disables.includes(id))
           // When the live composition does not match the requested state
           // (enable failed to hot-mount / disable left the fiber up), the
           // change lands on the next boot via the patch layer + state.json —

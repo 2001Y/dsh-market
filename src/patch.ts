@@ -30,7 +30,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { logEvent } from './log.ts'
 import { parsePatchFile, parsePatchText } from './check.ts'
-import { bundlePatchInsertedIds, declaredBundlePatchFiles, parsePatchRows } from './profile.ts'
+import { bundleOptOutRowIds, bundlePatchInsertedIds, declaredBundlePatchFiles, parsePatchRows } from './profile.ts'
 
 /** The slice of the loader tree this module needs. */
 export interface PatchHost {
@@ -406,8 +406,15 @@ export function packagePatchFlags(
   const forced: string[] = []
   for (const name of names) {
     const rows = rowIdsForPackage(host, profileDirectory, name)
-    if (rows.some(id => state.disables.includes(id))) disabled.push(name)
-    if (rows.some(id => state.forced.includes(id))) forced.push(name)
+    // Rows the package's own layer already ships off say nothing about what
+    // the user decided (#876): `dsh-mnemon` ships four strategy rows as
+    // opt-in, its user patch layer repeats one of them, and the package was
+    // reported as 「已停用 / 重启后保持关闭」 while it was running. Only the
+    // user's decisions ABOVE the bundle's own default count.
+    const optOut = new Set(bundleOptOutRowIds(join(profileDirectory, 'node_modules', name)))
+    const decidedByUser = (id: string): boolean => !optOut.has(id)
+    if (rows.some(id => decidedByUser(id) && state.disables.includes(id))) disabled.push(name)
+    if (rows.some(id => decidedByUser(id) && state.forced.includes(id))) forced.push(name)
   }
   return { disabled, forced }
 }

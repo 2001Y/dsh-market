@@ -675,6 +675,61 @@ describe('packagePatchFlags', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('does not call a package disabled over a row it ships switched off itself (#876)', () => {
+    // dsh-mnemon's real shape: the bundle ships four `mnemon-strategy-*` rows
+    // as opt-in — `disabled: true` in its OWN patch, before the user ever saw
+    // it — and the user patch layer repeats one of them. Counting that as a
+    // user decision made the card say 「已停用 / 重启后保持关闭」 about a
+    // plugin that was demonstrably running, and offered an enable button that
+    // force-opened the other opt-in rows.
+    const dir = patchDir()
+    try {
+      mkdirSync(join(dir, 'node_modules', 'dsh-mnemon'), { recursive: true })
+      writeFileSync(join(dir, 'node_modules', 'dsh-mnemon', 'cordis.patch.yml'), [
+        '- insert:',
+        '    - id: mnemon',
+        '      name: dsh-mnemon',
+        '    - id: mnemon-strategy-general',
+        '      name: dsh-mnemon-strategy-general',
+        '      disabled: true',
+        '    - id: mnemon-strategy-light-context',
+        '      name: dsh-mnemon-strategy-light-context',
+        '      disabled: true',
+        '',
+      ].join('\n'))
+      const patch = join(dir, 'cordis.patch.yml')
+      writeFileSync(patch, '- id: mnemon-strategy-light-context\n  disabled: true\n')
+      const flags = packagePatchFlags(emptyHost, dir, ['dsh-mnemon'], readUserPatchState(patch))
+      expect(flags.disabled).toEqual([])
+      expect(flags.forced).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('still reads a decision about the package\'s own core row', () => {
+    // The other half of the same rule: the user really did switch the package
+    // off, so the row that IS the package counts as before.
+    const dir = patchDir()
+    try {
+      mkdirSync(join(dir, 'node_modules', 'dsh-mnemon'), { recursive: true })
+      writeFileSync(join(dir, 'node_modules', 'dsh-mnemon', 'cordis.patch.yml'), [
+        '- insert:',
+        '    - id: mnemon',
+        '      name: dsh-mnemon',
+        '    - id: mnemon-strategy-general',
+        '      name: dsh-mnemon-strategy-general',
+        '      disabled: true',
+        '',
+      ].join('\n'))
+      const patch = join(dir, 'cordis.patch.yml')
+      writeFileSync(patch, '- id: mnemon\n  disabled: true\n')
+      expect(packagePatchFlags(emptyHost, dir, ['dsh-mnemon'], readUserPatchState(patch)).disabled).toEqual(['dsh-mnemon'])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
 describe('the patch file always stays a top-level array', () => {
   /**
