@@ -8525,6 +8525,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			const [restarting, setRestarting] = (0, react.useState)(false);
 			const [showTop, setShowTop] = (0, react.useState)(false);
 			const [backupBusy, setBackupBusy] = (0, react.useState)(false);
+			const webdavInFlight = (0, react.useRef)(false);
 			const [backupMessage, setBackupMessage] = (0, react.useState)(null);
 			const [backupRestored, setBackupRestored] = (0, react.useState)(false);
 			const [pendingBackup, setPendingBackup] = (0, react.useState)(null);
@@ -10665,7 +10666,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				}).catch((error) => setBackupMessage(String(error))).finally(() => setBackupBusy(false));
 			}, [finishRestore, pendingBackup]);
 			const runWebdav = (0, react.useCallback)((action) => {
-				if (webdavUrl.trim() === "") return;
+				if (webdavUrl.trim() === "" || webdavInFlight.current) return;
+				webdavInFlight.current = true;
 				setBackupBusy(true);
 				setBackupMessage(null);
 				setRestoreErrors([]);
@@ -10688,7 +10690,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 						} catch {}
 						setBackupMessage(t("backupDone"));
 					}
-				}).catch((error) => setBackupMessage(String(error))).finally(() => setBackupBusy(false));
+				}).catch((error) => setBackupMessage(String(error))).finally(() => {
+					webdavInFlight.current = false;
+					setBackupBusy(false);
+				});
 			}, [
 				previewBackup,
 				t,
@@ -10812,6 +10817,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				setExportIncludeConfig(false);
 				setExportOpen(true);
 			}, [installed, installedBundles]);
+			const runWebdavRef = (0, react.useRef)(runWebdav);
+			(0, react.useEffect)(() => {
+				runWebdavRef.current = runWebdav;
+			}, [runWebdav]);
 			(0, react.useEffect)(() => {
 				try {
 					localStorage.setItem(WEBDAV_STORAGE_KEY, JSON.stringify({
@@ -10820,18 +10829,19 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 						auto: autoBackup
 					}));
 				} catch {}
-				if (!autoBackup || webdavUrl.trim() === "") return;
+			}, [
+				autoBackup,
+				webdavUrl,
+				webdavUser
+			]);
+			(0, react.useEffect)(() => {
+				if (!autoBackup) return;
 				let last = 0;
 				try {
 					last = Number(localStorage.getItem("dshm-webdav-last")) || 0;
 				} catch {}
-				if (Date.now() - last >= 864e5) runWebdav("backup");
-			}, [
-				autoBackup,
-				runWebdav,
-				webdavUrl,
-				webdavUser
-			]);
+				if (Date.now() - last >= 864e5) runWebdavRef.current("backup");
+			}, [autoBackup]);
 			const sessionPendingRestart = doneUrls.length + restartNames.length + removedCount + toggleRestart + (backupRestored ? 1 : 0);
 			/**
 			* Plugins the HOST reports as restart-pending, independent of what this

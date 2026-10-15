@@ -8,6 +8,7 @@
 
 import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { StrictMode } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarketSection, OwnerAvatar, resetMarketPortalHost, resetThemePreviewCache } from '../../src/client/MarketSection.tsx'
@@ -160,6 +161,142 @@ afterEach(() => {
   vi.unstubAllGlobals()
   sessionStorage.clear()
   resetGithubRouting()
+})
+
+describe('WebDAV daily backup (#868)', () => {
+  const day = 24 * 60 * 60 * 1000
+  const now = 1_800_000_000_000
+  const config = { url: 'https://dav.example/dsh/backup.json', username: 'alice', auto: true }
+  const requests = () => fetchCalls.filter(call => call.path === '/dsh-market/webdav')
+
+  beforeEach(() => { vi.spyOn(Date, 'now').mockReturnValue(now) })
+  afterEach(() => { vi.restoreAllMocks() })
+
+  async function openBackup() {
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getByRole('button', { name: en.tabAdvanced }))
+  }
+
+  it.each([
+    ['URL', en.webdavUrl, 'https://dav.example/dsh/edited.json'],
+    ['username', en.webdavUser, 'bob'],
+    ['password', en.webdavPassword, 'session-secret'],
+  ])('editing the %s after a failed daily backup does not retry it', async (_field, placeholder, value) => {
+    localStorage.setItem('dshm-webdav', JSON.stringify(config))
+    stubFetch({ '/dsh-market/webdav': { __status: 500, error: 'daily backup failed' } })
+    const view = render(<MarketSection {...props()} />)
+    await openBackup()
+    await screen.findByText('Error: daily backup failed')
+    expect(requests()).toHaveLength(1)
+    fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value } })
+    fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value: `${value}x` } })
+    // A new translation callback must not become an automatic-backup trigger either.
+    view.rerender(<MarketSection {...props()} />)
+    await act(async () => {})
+    expect(requests()).toHaveLength(1)
+    expect(localStorage.getItem('dshm-webdav-last')).toBeNull()
+    // A failed request releases the lock so an explicit retry still works.
+    fireEvent.click(screen.getByRole('button', { name: en.webdavUpload }))
+    await act(async () => {})
+    expect(requests()).toHaveLength(2)
+  })
+
+  it.each([
+    ['no previous success', null, true],
+    ['less than 24 hours', now - day + 1, false],
+    ['exactly 24 hours', now - day, true],
+    ['more than 24 hours', now - day - 1, true],
+  ])('checks the original daily threshold on mount: %s', async (_label, last, due) => {
+    localStorage.setItem('dshm-webdav', JSON.stringify(config))
+    if (last !== null) localStorage.setItem('dshm-webdav-last', String(last))
+    stubFetch({ '/dsh-market/webdav': { ok: true } })
+    render(<MarketSection {...props()} />)
+    await openBackup()
+    expect(requests()).toHaveLength(due ? 1 : 0)
+    if (due) await waitFor(() => expect(localStorage.getItem('dshm-webdav-last')).toBe(String(now)))
+  })
+
+  it('does not overlap daily uploads during StrictMode replay, editing or off/on toggles', async () => {
+    localStorage.setItem('dshm-webdav', JSON.stringify(config))
+    const fallback = stubFetch()
+    let finish!: (response: Response) => void
+    const pending = new Promise<Response>(resolve => { finish = resolve })
+    vi.stubGlobal('fetch', (input: unknown, init?: RequestInit) => {
+      if (String(input) !== '/dsh-market/webdav') return fallback(input, init)
+      fetchCalls.push({ path: String(input), method: init!.method!, body: JSON.parse(String(init!.body)) })
+      return pending
+    })
+    render(<StrictMode><MarketSection {...props()} /></StrictMode>)
+    await openBackup()
+    expect(requests()).toHaveLength(1)
+    fireEvent.change(screen.getByPlaceholderText(en.webdavUrl), { target: { value: `${config.url}x` } })
+    fireEvent.change(screen.getByPlaceholderText(en.webdavUser), { target: { value: 'bob' } })
+    fireEvent.change(screen.getByPlaceholderText(en.webdavPassword), { target: { value: 'secret' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: en.autoBackup }))
+    fireEvent.click(screen.getByRole('checkbox', { name: en.autoBackup }))
+    expect(requests()).toHaveLength(1)
+    expect(localStorage.getItem('dshm-webdav-last')).toBeNull()
+    await act(async () => { finish(new Response(JSON.stringify({ ok: true }))) })
+    await screen.findByText(en.backupDone)
+    expect(localStorage.getItem('dshm-webdav-last')).toBe(String(now))
+    fireEvent.click(screen.getByRole('checkbox', { name: en.autoBackup }))
+    fireEvent.click(screen.getByRole('checkbox', { name: en.autoBackup }))
+    expect(requests()).toHaveLength(1)
+  })
+
+  it('does not start a backup when an enabled but empty URL is filled in', async () => {
+    localStorage.setItem('dshm-webdav', JSON.stringify({ ...config, url: '' }))
+    stubFetch({ '/dsh-market/webdav': { ok: true } })
+    const view = render(<MarketSection {...props()} />)
+    await openBackup()
+    expect(requests()).toHaveLength(0)
+    fireEvent.change(screen.getByPlaceholderText(en.webdavUrl), { target: { value: config.url } })
+    fireEvent.change(screen.getByPlaceholderText(en.webdavPassword), { target: { value: 'secret' } })
+    await act(async () => {})
+    expect(requests()).toHaveLength(0)
+    // The next opening still performs the due daily backup with saved settings.
+    view.unmount()
+    render(<MarketSection {...props()} />)
+    await openBackup()
+    expect(requests()).toHaveLength(1)
+    expect(requests()[0]?.body).toEqual({ action: 'backup', url: config.url, username: config.username, password: '' })
+  })
+
+  it('uses current settings when enabled and still supports manual upload and restore without storing passwords', async () => {
+    localStorage.setItem('dshm-webdav', JSON.stringify({ ...config, auto: false, password: 'old-secret' }))
+    const backup = {
+      format: 'dsh-profile-backup', version: 0.2,
+      files: [{ path: 'package.json', json: { dependencies: { 'webdav-plugin': '^1.0.0' } } }],
+    }
+    stubFetch({ '/dsh-market/webdav': { ok: true, backup }, '/dsh-market/restore': { ok: true } })
+    render(<MarketSection {...props()} />)
+    await openBackup()
+    expect((screen.getByPlaceholderText(en.webdavPassword) as HTMLInputElement).value).toBe('')
+    const editedUrl = 'https://dav.example/dsh/edited.json'
+    fireEvent.change(screen.getByPlaceholderText(en.webdavUrl), { target: { value: editedUrl } })
+    fireEvent.change(screen.getByPlaceholderText(en.webdavUser), { target: { value: 'bob' } })
+    fireEvent.change(screen.getByPlaceholderText(en.webdavPassword), { target: { value: 'session-secret' } })
+    expect(requests()).toHaveLength(0)
+    expect(JSON.parse(localStorage.getItem('dshm-webdav')!)).toEqual({ url: editedUrl, username: 'bob', auto: false })
+    fireEvent.click(screen.getByRole('checkbox', { name: en.autoBackup }))
+    await screen.findByText(en.backupDone)
+    const body = { action: 'backup', url: editedUrl, username: 'bob', password: 'session-secret' }
+    expect(requests().map(call => call.body)).toEqual([body])
+    expect(JSON.parse(localStorage.getItem('dshm-webdav')!)).toEqual({ url: editedUrl, username: 'bob', auto: true })
+    fireEvent.click(screen.getByRole('button', { name: en.webdavUpload }))
+    await waitFor(() => expect(screen.getByRole('button', { name: en.webdavUpload }).hasAttribute('disabled')).toBe(false))
+    expect(requests().map(call => call.body)).toEqual([body, body])
+    fireEvent.click(screen.getByRole('button', { name: en.webdavRestore }))
+    await screen.findByText('webdav-plugin')
+    expect(requests().at(-1)?.body).toEqual({ ...body, action: 'restore' })
+    expect(screen.getByRole('button', { name: en.restoreStart })).toBeTruthy()
+    expect(fetchCalls.some(call => call.path === '/dsh-market/restore')).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: en.restoreStart }))
+    fireEvent.click(await screen.findByRole('button', { name: en.confirm, exact: true }))
+    await screen.findByText(en.restoreDone)
+    expect(fetchCalls.find(call => call.path === '/dsh-market/restore')?.body).toEqual({ backup })
+    expect(localStorage.getItem('dshm-webdav')).not.toContain('secret')
+  })
 })
 
 describe('search input scheduling', () => {
