@@ -2279,6 +2279,7 @@ export function MarketSection(props: MarketSectionProps) {
   const [restarting, setRestarting] = useState(false)
   const [showTop, setShowTop] = useState(false)
   const [backupBusy, setBackupBusy] = useState(false)
+  const webdavInFlight = useRef(false)
   const [backupMessage, setBackupMessage] = useState<string | null>(null)
   const [backupRestored, setBackupRestored] = useState(false)
   const [pendingBackup, setPendingBackup] = useState<unknown>(null)
@@ -4576,7 +4577,8 @@ export function MarketSection(props: MarketSectionProps) {
   }, [finishRestore, pendingBackup])
 
   const runWebdav = useCallback((action: 'backup' | 'restore') => {
-    if (webdavUrl.trim() === '') return
+    if (webdavUrl.trim() === '' || webdavInFlight.current) return
+    webdavInFlight.current = true
     setBackupBusy(true)
     setBackupMessage(null)
     setRestoreErrors([])
@@ -4593,7 +4595,10 @@ export function MarketSection(props: MarketSectionProps) {
         try { localStorage.setItem('dshm-webdav-last', String(Date.now())) } catch { /* storage unavailable */ }
         setBackupMessage(t('backupDone'))
       }
-    }).catch(error => setBackupMessage(String(error))).finally(() => setBackupBusy(false))
+    }).catch(error => setBackupMessage(String(error))).finally(() => {
+      webdavInFlight.current = false
+      setBackupBusy(false)
+    })
   }, [previewBackup, t, webdavPassword, webdavUrl, webdavUser])
 
   /** Map the server's token-source string to a localized label. */
@@ -4718,6 +4723,9 @@ export function MarketSection(props: MarketSectionProps) {
     setExportOpen(true)
   }, [installed, installedBundles])
 
+  const runWebdavRef = useRef(runWebdav)
+  useEffect(() => { runWebdavRef.current = runWebdav }, [runWebdav])
+
   useEffect(() => {
     // Persist only the non-secret WebDAV settings; the password stays
     // server-side/in-memory (see savedWebdav). Storage itself may be
@@ -4725,13 +4733,18 @@ export function MarketSection(props: MarketSectionProps) {
     try {
       localStorage.setItem(WEBDAV_STORAGE_KEY, JSON.stringify({ url: webdavUrl, username: webdavUser, auto: autoBackup }))
     } catch { /* storage unavailable — config just won't survive reload */ }
-    if (!autoBackup || webdavUrl.trim() === '') return
+  }, [autoBackup, webdavUrl, webdavUser])
+
+  // Check when the market opens or daily backup is enabled. Editing the
+  // settings (or changing the locale) must not start another upload.
+  useEffect(() => {
+    if (!autoBackup) return
     let last = 0
     try {
       last = Number(localStorage.getItem('dshm-webdav-last')) || 0
     } catch { /* ignore */ }
-    if (Date.now() - last >= 24 * 60 * 60 * 1000) runWebdav('backup')
-  }, [autoBackup, runWebdav, webdavUrl, webdavUser])
+    if (Date.now() - last >= 24 * 60 * 60 * 1000) runWebdavRef.current('backup')
+  }, [autoBackup])
 
   // #558: count restart-pending session changes (restartNames), not every
   // completed `updatedNames` entry (which would double-count a batch update
