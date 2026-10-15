@@ -1555,6 +1555,28 @@ describe('MarketSection (jsdom)', () => {
     expect(screen.queryByText(re(en.restartBanner))).toBeNull()
   })
 
+  it('does not list a plain dependency as a plugin, nor offer to uninstall it (#857)', async () => {
+    // The reported shape: zustand / bufferutil / utf-8-validate sit in
+    // node_modules because other plugins need them, and the installed list
+    // rendered each one as a card whose uninstall button really removes it.
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web', installed: { 'dsh-loop': '^1.0.0', zustand: '^5.0.15' }, live: [], disabled: [],
+        activation: {
+          'dsh-loop': { state: 'live', hot: true, bundle: true, reasons: ['live via its bundle patch'] },
+          zustand: { state: 'inert', dependencyOf: 'dsh-loop', hot: false, bundle: false, reasons: ['a plain dependency with no dsh metadata'] },
+        },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    // Counted, so a shorter list does not read as packages going missing...
+    await screen.findByText(en.installedDependencyNote.replace('{0}', '1'))
+    // ...but not listed, and therefore with no uninstall path to find.
+    expect(screen.queryByText('zustand')).toBeNull()
+  })
+
   it('a stale update response arms the Update-now button (#22 flow)', async () => {
     stubFetch({
       '/dsh-market/installed': { profile: 'web', installed: { 'dsh-loop': '^1.0.0' }, live: [] },

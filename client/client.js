@@ -557,6 +557,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			marketUpdate: "更新插件市场",
 			updateAll: "全部更新",
 			heldReleaseNotice: "已安装，但不是最新版：这个 profile 的 minimumReleaseAge 挡住了 {0}，安装的是 {1}。",
+			installedDependencyNote: "另有 {0} 个包是插件带进来的依赖，不是插件，未列在上方。",
 			heldReleaseAction: "仍安装 {0}",
 			ignoreUpdateNotice: "重启前不再提醒",
 			ignoreAllUpdateNotices: "重启前都不再提醒",
@@ -1273,6 +1274,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			marketUpdate: "Update the plugin market",
 			updateAll: "Update all",
 			heldReleaseNotice: "Installed, but not the newest: this profile's minimumReleaseAge held {0} back, so {1} was installed.",
+			installedDependencyNote: "{0} more packages came in as dependencies of plugins — they are not plugins, so they are not listed above.",
 			heldReleaseAction: "Install {0} anyway",
 			ignoreUpdateNotice: "Don't remind until restart",
 			ignoreAllUpdateNotices: "Don't remind any until restart",
@@ -10641,7 +10643,19 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			const reminderUpdatableNames = updatableNames.filter((name) => !quietUpdateSet.has(name) && !installedBlocked(name));
 			const reminderBatchUpdatableNames = batchUpdatableNames.filter((name) => !quietUpdateSet.has(name) && !installedBlocked(name));
 			const reminderUpdateNames = [...updates[selfName]?.updateAvailable === true && !updatedNames.includes(selfName) ? [selfName] : [], ...updatableNames].filter((name) => !quietUpdateSet.has(name) && !installedBlocked(name));
-			const installedOtherCount = Object.keys(installed).filter((name) => name !== selfName).length;
+			/**
+			* Installed packages that are not plugins at all: a plain library some
+			* other plugin pulled in — zustand, bufferutil, a peer of ws (#634's
+			* `dependencyOf`, #857). They were rendered as plugin cards with a
+			* working uninstall, which is a real remove path for something a plugin
+			* needs. Out of the list; the count stays visible in one quiet line, so the
+			* list is not silently shorter than package.json.
+			*/
+			const dependencyOnlyNames = (0, react.useMemo)(() => new Set(Object.keys(installed).filter((name) => {
+				const act = activations[name];
+				return act?.state === "inert" && act.dependencyOf !== void 0;
+			})), [installed, activations]);
+			const installedOtherCount = Object.keys(installed).filter((name) => name !== selfName && !dependencyOnlyNames.has(name)).length;
 			const ignoreUpdateNotices = (0, react.useCallback)((names) => {
 				if (bootId === null || names.length === 0) return;
 				setIgnoredUpdateNames((current) => {
@@ -10936,7 +10950,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			const isInstalledListActive = tab === "installed" && installedView === "list";
 			const updatesLoaded = Object.keys(updates).length > 0;
 			const orderedInstalledEntries = (0, react.useMemo)(() => {
-				return Object.entries(displayedInstalled).filter(([name]) => name !== selfName).sort(([nameA, specA], [nameB, specB]) => {
+				return Object.entries(displayedInstalled).filter(([name]) => name !== selfName).filter(([name]) => !dependencyOnlyNames.has(name)).sort(([nameA, specA], [nameB, specB]) => {
 					const aOn = effectiveDisabledSet.has(nameA) ? 0 : 1;
 					const bOn = effectiveDisabledSet.has(nameB) ? 0 : 1;
 					if (aOn !== bOn) return bOn - aOn;
@@ -10948,7 +10962,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				displayedInstalled,
 				selfName,
 				updatesLoaded,
-				effectiveDisabledSet
+				effectiveDisabledSet,
+				dependencyOnlyNames
 			]);
 			const missingRestoreCount = Object.keys(pendingDependencies).filter((name) => !installedFiles.includes(name)).length;
 			const hasUpdates = reminderUpdatableNames.length > 0;
@@ -11770,7 +11785,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			*/
 			const pendingRefreshNames = (0, react.useMemo)(() => [.../* @__PURE__ */ new Set([...hotNames, ...refreshNames])], [hotNames, refreshNames]);
 			/** Installed plugins the market itself cannot group (#60). */
-			const groupableNames = Object.keys(installed).filter((name) => name !== "dsh-market" && name !== "dshmarket");
+			const groupableNames = Object.keys(installed).filter((name) => name !== "dsh-market" && name !== "dshmarket" && !dependencyOnlyNames.has(name));
 			/** Names already inside some group; everything else shows under "ungrouped". */
 			const groupedNames = (0, react.useMemo)(() => new Set(Object.values(groups).flat()), [groups]);
 			const ungroupedNames = groupableNames.filter((name) => !groupedNames.has(name));
@@ -13641,6 +13656,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 										})]
 									}, name);
 								}
+							}),
+							dependencyOnlyNames.size > 0 && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("p", {
+								className: Market_module_css_default.groupOrgHint,
+								children: t("installedDependencyNote").replace("{0}", String(dependencyOnlyNames.size))
 							})
 						] })
 					}),

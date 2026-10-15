@@ -4462,7 +4462,23 @@ export function MarketSection(props: MarketSectionProps) {
   // The market manages itself from its own settings card (Settings → Plugins
   // → Plugin configuration), not as a row here — listing it in both places
   // read as two different controls for the same thing.
-  const installedOtherCount = Object.keys(installed).filter(name => name !== selfName).length
+  /**
+   * Installed packages that are not plugins at all: a plain library some
+   * other plugin pulled in — zustand, bufferutil, a peer of ws (#634's
+   * `dependencyOf`, #857). They were rendered as plugin cards with a
+   * working uninstall, which is a real remove path for something a plugin
+   * needs. Out of the list; the count stays visible in one quiet line, so the
+   * list is not silently shorter than package.json.
+   */
+  const dependencyOnlyNames = useMemo(
+    () => new Set(Object.keys(installed).filter(name => {
+      const act = activations[name]
+      return act?.state === 'inert' && act.dependencyOf !== undefined
+    })),
+    [installed, activations],
+  )
+  const installedOtherCount = Object.keys(installed)
+    .filter(name => name !== selfName && !dependencyOnlyNames.has(name)).length
 
   const ignoreUpdateNotices = useCallback((names: string[]) => {
     if (bootId === null || names.length === 0) return
@@ -4759,6 +4775,7 @@ export function MarketSection(props: MarketSectionProps) {
   const orderedInstalledEntries = useMemo(() => {
     return Object.entries(displayedInstalled)
       .filter(([name]) => name !== selfName)
+      .filter(([name]) => !dependencyOnlyNames.has(name))
       .sort(([nameA, specA], [nameB, specB]) => {
         // The list reads as "what is running", so a plugin that is off sinks
         // below every one that is on (#745) — even a disabled row with a
@@ -4771,7 +4788,7 @@ export function MarketSection(props: MarketSectionProps) {
         return bUp - aUp
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `updatesLoaded` stands in for `updates`/`updatedNames`: reorder when the check lands, then hold (#631). `effectiveDisabledSet` only re-runs this when a disable state actually changed; the toggled row is the only one that moves.
-  }, [isInstalledListActive, displayedInstalled, selfName, updatesLoaded, effectiveDisabledSet])
+  }, [isInstalledListActive, displayedInstalled, selfName, updatesLoaded, effectiveDisabledSet, dependencyOnlyNames])
   const missingRestoreCount = Object.keys(pendingDependencies).filter(name => !installedFiles.includes(name)).length
   // Self-update lives in the header button and the settings card, not this
   // tab's row list (the market itself is filtered out below) — so a pending
@@ -5520,7 +5537,8 @@ export function MarketSection(props: MarketSectionProps) {
   )
 
   /** Installed plugins the market itself cannot group (#60). */
-  const groupableNames = Object.keys(installed).filter(name => name !== 'dsh-market' && name !== 'dshmarket')
+  const groupableNames = Object.keys(installed)
+    .filter(name => name !== 'dsh-market' && name !== 'dshmarket' && !dependencyOnlyNames.has(name))
   /** Names already inside some group; everything else shows under "ungrouped". */
   const groupedNames = useMemo(() => new Set(Object.values(groups).flat()), [groups])
   const ungroupedNames = groupableNames.filter(name => !groupedNames.has(name))
@@ -7045,6 +7063,13 @@ export function MarketSection(props: MarketSectionProps) {
                           }}
                           />
                         )}
+                {dependencyOnlyNames.size > 0 && (
+                  // The list is complete as a list of PLUGINS; the count keeps it
+                  // from looking like packages went missing (#857).
+                  <p className={css.groupOrgHint}>
+                    {t('installedDependencyNote').replace('{0}', String(dependencyOnlyNames.size))}
+                  </p>
+                )}
                 </>
               )}
       </div>
