@@ -1996,13 +1996,13 @@ export function MarketSection(props: MarketSectionProps) {
     commits?: { items: NoteCommit[]; found: boolean }
     npmTimes?: Array<{ version: string; date: string }>
     sourceUrl?: string | null
-    reason?: 'missing' | 'unavailable'
+    reason?: 'missing' | 'unavailable' | 'unreadable'
   }
   type ResolvedNotes =
     | { kind: 'release'; release: NoteRelease }
     | { kind: 'commits'; commits: { items: NoteCommit[]; found: boolean } }
     | { kind: 'npm'; npmTimes: Array<{ version: string; date: string }> }
-    | { kind: 'source'; sourceUrl?: string | null; reason?: 'missing' | 'unavailable' }
+    | { kind: 'source'; sourceUrl?: string | null; reason?: 'missing' | 'unavailable' | 'unreadable' }
     | { kind: 'none' }
   interface CompatibilityNotice {
     code: 'soft-incompatible'
@@ -7631,7 +7631,9 @@ export function MarketSection(props: MarketSectionProps) {
             )
             : updateNotes.kind === 'source' ? (
               <div className={css.spec}>
-                {t(updateNotes.reason === 'unavailable' ? 'notesLoadFail' : 'notesSource')}
+                {t(updateNotes.reason === 'unavailable'
+                  ? 'notesLoadFail'
+                  : updateNotes.reason === 'unreadable' ? 'notesSourceUnreadable' : 'notesSource')}
                 {typeof updateNotes.sourceUrl === 'string' && /^https?:\/\//i.test(updateNotes.sourceUrl)
                   ? <>{lang === 'zh' ? '' : ' '}<a className={css.notesSourceLink} href={updateNotes.sourceUrl} target="_blank" rel="noreferrer">{t('notesSourceLink')}</a></>
                   : updateNotes.reason !== 'unavailable' && <>{lang === 'zh' ? '' : ' '}{t('notesSourceNoLink')}</>}

@@ -504,8 +504,12 @@ describe('updateNotesFor — sources other than npm (#819)', () => {
   it('never asks npm about a gitee install, and points at its repository', async () => {
     writeProfile({ 'dsh-codearts-auth': GITEE })
     const asked = stubAll()
+    // `unreadable`, not `missing`: the notes feed is built from GitHub, so a
+    // gitee install has nothing the market could ever collect. Telling the
+    // reader it has "not been collected yet" would be a promise that cannot
+    // be kept — the reporter asked for exactly this distinction.
     await expect(updateNotesFor('web', dir, 'dsh-codearts-auth')).resolves.toEqual({
-      kind: 'source', reason: 'missing', sourceUrl: 'https://gitee.com/iJetLi/deepseek-harness-codearts',
+      kind: 'source', reason: 'unreadable', sourceUrl: 'https://gitee.com/iJetLi/deepseek-harness-codearts',
     })
     expect(askedNpmFor(asked(), 'dsh-codearts-auth')).toBe(false)
   })
@@ -517,10 +521,20 @@ describe('updateNotesFor — sources other than npm (#819)', () => {
       asked.push(String(input))
       return new Response('no', { status: 503 })
     }))
+    // Whatever went wrong this time, the answer for this source is the same
+    // one it will always be, so it does not turn into "try again later".
     await expect(updateNotesFor('web', dir, 'dsh-codearts-auth')).resolves.toEqual({
-      kind: 'source', reason: 'unavailable', sourceUrl: 'https://gitee.com/iJetLi/deepseek-harness-codearts',
+      kind: 'source', reason: 'unreadable', sourceUrl: 'https://gitee.com/iJetLi/deepseek-harness-codearts',
     })
     expect(askedNpmFor(asked, 'dsh-codearts-auth')).toBe(false)
+  })
+
+  it('keeps "not collected yet" for a GitHub install, which the feed does cover', async () => {
+    writeProfile({ 'dsh-other': 'git+https://github.com/someone/dsh-other.git' })
+    stubAll()
+    await expect(updateNotesFor('web', dir, 'dsh-other')).resolves.toEqual({
+      kind: 'source', reason: 'missing', sourceUrl: 'https://github.com/someone/dsh-other',
+    })
   })
 
   it('does not borrow the notes of a same-named catalog plugin from another repository', async () => {

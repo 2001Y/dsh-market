@@ -351,9 +351,10 @@ export interface UpdateNotes {
   /**
    * Present for `source`: `missing` when the notes loaded without this
    * plugin, `unavailable` when they could not be loaded at all — a passing
-   * failure, not a fact about the plugin.
+   * failure, not a fact about the plugin — and `unreadable` when the source is
+   * one the market can never read, so waiting will not help (#819).
    */
-  reason?: 'missing' | 'unavailable'
+  reason?: 'missing' | 'unavailable' | 'unreadable'
 }
 
 /**
@@ -380,9 +381,17 @@ export async function updateNotesFor(
   const specKey = repoKeyOf(spec) ?? lookupRepoFromUrl(spec)
   // The market holds no notes for this install, but its history is still
   // readable where it came from: say which, and point there.
+  //
+  // Notes come from the catalog's own release feed, which is built from
+  // GitHub, so a gitee or self-hosted git install has no feed to find:
+  // "the market has not collected this one yet" would promise something that
+  // cannot happen, and the reader waits for it (#819). Those say the source
+  // cannot be read instead. The url is the same either way — the repository
+  // is where the answer actually is.
+  const unreadableSource = githubIdentityOf(spec) === null && isGitHostedSpec(spec)
   const fromSource = (reason: 'missing' | 'unavailable'): UpdateNotes => ({
     kind: 'source',
-    reason,
+    reason: unreadableSource ? 'unreadable' : reason,
     sourceUrl: sourceWebUrl(spec) ?? specKey,
   })
   try {

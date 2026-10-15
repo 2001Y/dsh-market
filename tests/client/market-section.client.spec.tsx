@@ -292,6 +292,17 @@ describe('api() base resolution (#345)', () => {
       expect(screen.queryByText(en.notesNone)).toBeNull()
     })
 
+    it('says a non-GitHub source cannot be read, rather than that it is not collected yet', async () => {
+      // #819's actual case: the dialog on a gitee install. "not collected
+      // yet" reads as something that may arrive later, and for this source
+      // nothing ever will — the feed is built from GitHub.
+      await openNotes({ kind: 'source', reason: 'unreadable', sourceUrl: 'https://gitee.com/o/r' })
+      expect(await screen.findByText(new RegExp(en.notesSourceUnreadable))).toBeTruthy()
+      expect(screen.queryByText(new RegExp(en.notesSource))).toBeNull()
+      expect(screen.queryByText(new RegExp(en.notesLoadFail))).toBeNull()
+      expect(screen.getByRole('link', { name: en.notesSourceLink }).getAttribute('href')).toBe('https://gitee.com/o/r')
+    })
+
     it('calls a failed load passing, and still links to the repository', async () => {
       await openNotes({ kind: 'source', reason: 'unavailable', sourceUrl: 'https://gitee.com/o/r' })
       expect(await screen.findByText(new RegExp(en.notesLoadFail))).toBeTruthy()

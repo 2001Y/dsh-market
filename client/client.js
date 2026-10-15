@@ -395,6 +395,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			notesNpm: "版本发布时间",
 			notesNone: "该插件未提供更新说明。",
 			notesSource: "市场还没收录这个插件的更新说明。",
+			notesSourceUnreadable: "这个插件不是从 GitHub 装的，市场读不到它的改动记录。",
 			notesSourceLink: "去仓库看改了什么",
 			notesSourceNoLink: "可以问问插件作者改了什么。",
 			notesLoadFail: "暂时读不到更新说明，稍后再试。",
@@ -1112,6 +1113,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			notesNpm: "Version publish times",
 			notesNone: "This plugin does not publish update notes.",
 			notesSource: "The market doesn't have update notes for this plugin yet.",
+			notesSourceUnreadable: "This plugin was not installed from GitHub, so the market cannot read its change history.",
 			notesSourceLink: "See what changed in the repository",
 			notesSourceNoLink: "You can ask the plugin author what changed.",
 			notesLoadFail: "Update notes are unavailable right now — try again later.",
@@ -14283,7 +14285,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 								})]
 							}) : updateNotes.kind === "source" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 								className: Market_module_css_default.spec,
-								children: [t(updateNotes.reason === "unavailable" ? "notesLoadFail" : "notesSource"), typeof updateNotes.sourceUrl === "string" && /^https?:\/\//i.test(updateNotes.sourceUrl) ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [lang === "zh" ? "" : " ", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
+								children: [t(updateNotes.reason === "unavailable" ? "notesLoadFail" : updateNotes.reason === "unreadable" ? "notesSourceUnreadable" : "notesSource"), typeof updateNotes.sourceUrl === "string" && /^https?:\/\//i.test(updateNotes.sourceUrl) ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)(react_jsx_runtime.Fragment, { children: [lang === "zh" ? "" : " ", /* @__PURE__ */ (0, react_jsx_runtime.jsx)("a", {
 									className: Market_module_css_default.notesSourceLink,
 									href: updateNotes.sourceUrl,
 									target: "_blank",
