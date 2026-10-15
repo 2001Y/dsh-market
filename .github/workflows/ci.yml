@@ -123,8 +123,11 @@ jobs:
         # that seat — which is exactly the kind of change nothing in CI could
         # see back when the alpha broke the host's boot.
         # Each line is tracked at its published head: 0.1.7 at rc.2, 0.2 at
-        # rc.2 — npm's `latest` since 2026-09-29 — and 0.2.1 at its alpha,
-        # which is what `@deepseek-ai/dsh@alpha` gives.
+        # rc.2 — npm's `latest` since 2026-09-29 — and 0.2.1 at 0.2.1-alpha.4,
+        # which is what `@deepseek-ai/dsh@alpha` gives as of 2026-10-15. The
+        # head of a line moves without anything else changing (alpha.3 was the
+        # alpha tag that morning), so it is a pin to refresh, not a fact: the
+        # PEER range, not this, is what decides whether the market loads.
         # 0.2 is where this plugin broke first, and it broke SILENTLY (#756) —
         # the host's own compatibility gate refused the peer range and skipped
         # the bundle, so the market vanished from the UI with one stderr line.
@@ -140,7 +143,7 @@ jobs:
         # the RUNTIME version against the declared range (not the peer
         # package's own version), with `includePrerelease: true`. So
         # `@deepseek-ai/dsh-settings` is the one entry that decides whether the
-        # market loads at all — its range had to name `0.2.1-alpha.3` — while
+        # market loads at all — its range had to name the 0.2.1 line — while
         # `@deepseek-ai/cordis` and `@deepseek-ai/schemastery` are not gated by
         # it at all.
         #
@@ -160,7 +163,7 @@ jobs:
         # the profile's package.json). The market never runs it from inside a
         # running Desktop, so nothing here depends on the difference; the CLI
         # path this lane drives is the web profile's, unchanged.
-        dsh: ['0.1.0-rc.8', '0.1.2-alpha.2', '0.1.7-rc.2', '0.2.0-rc.2', '0.2.1-alpha.3']
+        dsh: ['0.1.0-rc.8', '0.1.2-alpha.2', '0.1.7-rc.2', '0.2.0-rc.2', '0.2.1-alpha.4']
         exclude:
           # Host-API breakage is platform-independent, and Windows web-e2e is
           # the slowest job in the matrix (~8 min). Running the older and the
@@ -175,7 +178,7 @@ jobs:
           - os: windows-latest
             dsh: '0.1.7-rc.2'
           - os: windows-latest
-            dsh: '0.2.1-alpha.3'
+            dsh: '0.2.1-alpha.4'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
