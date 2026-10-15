@@ -51,6 +51,7 @@ import type { OperationRecord } from './operations.ts'
 import { Diagnostics } from './Diagnostics.tsx'
 import { exportMarketLog } from './self-check.ts'
 import {
+  installCommandFor,
   api, applyGithubRouting, avatarColor, catalogEntryForInstalled, entryForDep, failureText, githubRouteCandidates, groupSwitchState, installedForCatalog, isGenerationSpec, isInstalled, localizeBilingual, localizeBilingualList, looksTerminal, matchInstalledName, orderedCategories, pluginCategories,
   formatCount, pageItems, pluginName, blockAliases, pluginScreenshotCandidates, pluginScreenshots, pluginsForFavorites, queuedRowApplies, rankThemeScreenshots, readSession, releaseNotesHttpsImage, rememberGithubRoute, resetScreenshotsCache, resolveCatalogRestore, safeScreenshots, sanitizeReleaseNotesBody, staleFavoriteUrls, themePlugins as themePluginsOf, themeSwatch, TIME_RANGE_DAYS, visiblePlugins, restartHintKey,
 } from './market-data.ts'
@@ -1723,6 +1724,18 @@ function blockedSessions(body: { runningAgents?: unknown }): string[] | undefine
   return names.length === 0 ? undefined : names
 }
 
+/**
+ * Whether the "compatible with this host" filter starts on, and remembers the
+ * answer once the user disagrees with the default (#872).
+ *
+ * Storage may be unavailable (private mode, a locked-down webview); the
+ * default is what matters, so a failure to read it is not a failure.
+ */
+const HOST_FILTER_KEY = 'dshm-host-filter'
+function readHostFilterPreference(): boolean {
+  try { return localStorage.getItem(HOST_FILTER_KEY) !== 'all' } catch { return true }
+}
+
 export function MarketSection(props: MarketSectionProps) {
   const t = props.t
   const initialWebdav = useMemo(savedWebdav, [])
@@ -2320,7 +2333,20 @@ export function MarketSection(props: MarketSectionProps) {
   /** Undefined while the first catalog response is pending; null means the host cannot be located. */
   const [hostVersion, setHostVersion] = useState<string | null | undefined>(undefined)
   /** v1 is deliberately opt-in: undeclared/unknown entries stay visible even when enabled. */
-  const [compatibleWithHost, setCompatibleWithHost] = useState(false)
+  // #872: ON by default. The report measured it on a live 0.2.0-rc.2 host —
+  // 175 discovered plugins, 45 of them declaring that host — so the default
+  // list was ~74% installable-in-name-only, with nothing at list level saying
+  // so. That is the wrong default per this project's own rule: the default has
+  // to be the one that is right without reading anything. Turning it off is
+  // one click in the filter menu, and the choice sticks.
+  const [compatibleWithHost, setCompatibleWithHostState] = useState(readHostFilterPreference)
+  const setCompatibleWithHost = useCallback((next: boolean) => {
+    setCompatibleWithHostState(next)
+    try { localStorage.setItem(HOST_FILTER_KEY, next ? 'compatible' : 'all') } catch { /* storage unavailable — the choice just won't survive a reload */ }
+  }, [])
+  /** The profile this page is running in, for the manual command's own
+   * `--profile` token (#872). The catalog's is always `web`. */
+  const [profileName, setProfileName] = useState<string | null>(null)
   const [hostCompatibility, setHostCompatibility] = useState<HostCompatibilityMap>({})
   const [hostCompatibilityPending, setHostCompatibilityPending] = useState(0)
   /** Names already resolved or in flight; failed/unavailable names are released for an explicit retry. */
@@ -2405,6 +2431,7 @@ export function MarketSection(props: MarketSectionProps) {
           setNotes(body.notes as Record<string, string>)
         }
         if (Array.isArray(body.patchDisabled)) setPatchDisabledNames(body.patchDisabled)
+        if (typeof body.profile === 'string') setProfileName(body.profile)
         if (Array.isArray(body.unbundled)) setUnbundledNames(body.unbundled)
         setConfigNamespaceIssues(Array.isArray(body.configNamespaces)
           ? body.configNamespaces.filter((item: unknown): item is { name: string; namespaces: string[]; ownEntryIds: string[] } =>
@@ -2830,14 +2857,23 @@ export function MarketSection(props: MarketSectionProps) {
     setShowTop(false)
   }, [tab, q, cat, sortField, sortDir, timeRange, compatibleWithHost, qThemes, themeSortField, themeSortDir, themeTimeRange, qFavorites, favSortField, favSortDir, favTimeRange, qInstalled, installedView])
 
-  const pluginsAll = useMemo(
-    () => (data === null ? [] : visiblePlugins(data.plugins, {
+  // The list, plus how many entries the host filter took out of it (#872).
+  // Both come from one pass over the same query, so the count is exactly
+  // "what this filter is hiding from what you were looking at" and the chip
+  // can say it without a second trip through the catalog.
+  const { plugins: pluginsAll, hostHiddenCount } = useMemo(() => {
+    if (data === null) return { plugins: [] as RegistryPlugin[], hostHiddenCount: 0 }
+    const query = {
       category: cat, query: q, lang, categories: data.categories,
-      sort: `${sortField}-${sortDir}`,
+      sort: `${sortField}-${sortDir}` as `${typeof sortField}-${typeof sortDir}`,
       sinceDays: timeRange === 'all' ? undefined : TIME_RANGE_DAYS[timeRange],
       hostCompatibility,
-      compatibleWithHost,
-    })),
+    }
+    const unfiltered = visiblePlugins(data.plugins, { ...query, compatibleWithHost: false })
+    if (!compatibleWithHost) return { plugins: unfiltered, hostHiddenCount: 0 }
+    const filtered = visiblePlugins(data.plugins, { ...query, compatibleWithHost: true })
+    return { plugins: filtered, hostHiddenCount: unfiltered.length - filtered.length }
+  },
     [data, q, cat, lang, sortField, sortDir, timeRange, hostCompatibility, compatibleWithHost])
   // One plugin can be stored under the installed name or the catalog name.
   // Both have to hide the card and skip Update all (#657).
@@ -6234,7 +6270,9 @@ export function MarketSection(props: MarketSectionProps) {
                             ? t('hostFilterLoading')
                               .replace('{0}', String(loadedHostPackages))
                               .replace('{1}', String(allHostPackages.length))
-                            : t('hostFilterActive').replace('{0}', hostVersion)}
+                            : t('hostFilterActive')
+                                .replace('{0}', hostVersion)
+                                .replace('{1}', String(hostHiddenCount))}
                         </div>
                       )}
                     </div>
@@ -7328,12 +7366,20 @@ export function MarketSection(props: MarketSectionProps) {
             open={cmdOpen}
             onToggle={() => setCmdOpen(o => !o)}
           >
-            <div className={css.confirmCmd}>
-              <div className={css.cmd}>{confirming.install}</div>
-              {typeof confirming.install === 'string' && confirming.install !== '' && (
-                <ConfirmCopyButton text={confirming.install} label={t('cmdCopy')} copiedLabel={t('cmdCopied')} />
-              )}
-            </div>
+            {(() => {
+              // #872: the catalog's command names the `web` profile, which is
+              // a different profile from the one this page is running in —
+              // and on a desktop profile the CLI refuses that name outright.
+              const shown = installCommandFor(confirming.install, profileName)
+              if (shown.unusable) return <div className={css.confirmCmd}><div className={css.cmd}>{t('cmdDesktopUnavailable')}</div></div>
+              if (shown.command === null) return null
+              return (
+                <div className={css.confirmCmd}>
+                  <div className={css.cmd}>{shown.command}</div>
+                  <ConfirmCopyButton text={shown.command} label={t('cmdCopy')} copiedLabel={t('cmdCopied')} />
+                </div>
+              )
+            })()}
           </ConfirmFold>
           </div>
           {(looksTerminal(confirming, lang) || confirming.deprecated === true) && (

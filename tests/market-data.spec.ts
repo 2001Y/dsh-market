@@ -8,7 +8,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  entryForDep, extractReadmeImageCandidates, extractReadmeImages, formatCount, groupSwitchState, installedForCatalog, isInstalled, isMarketItself, localizeBilingual, localizeBilingualList, looksTerminal, matchInstalledName, orderedCategories, pageItems, pluginCategories, pluginScreenshotCandidates, pluginsForFavorites, previewDimensionScore, rankThemeScreenshots, releaseNotesHttpsImage, resetGithubRouting, resetScreenshotsCache, safeScreenshots, sanitizeReleaseNotesBody, staleFavoriteUrls, themePlugins, visiblePlugins, humanOutput, failureText, catalogEntryForInstalled} from '../src/client/market-data.ts'
+  entryForDep, installCommandFor, extractReadmeImageCandidates, extractReadmeImages, formatCount, groupSwitchState, installedForCatalog, isInstalled, isMarketItself, localizeBilingual, localizeBilingualList, looksTerminal, matchInstalledName, orderedCategories, pageItems, pluginCategories, pluginScreenshotCandidates, pluginsForFavorites, previewDimensionScore, rankThemeScreenshots, releaseNotesHttpsImage, resetGithubRouting, resetScreenshotsCache, safeScreenshots, sanitizeReleaseNotesBody, staleFavoriteUrls, themePlugins, visiblePlugins, humanOutput, failureText, catalogEntryForInstalled} from '../src/client/market-data.ts'
 import type { RegistryPlugin, ScreenshotCandidate, ScreenshotRejection } from '../src/client/market-data.ts'
 
 function plugin(partial: Partial<RegistryPlugin>): RegistryPlugin {
@@ -1148,5 +1148,43 @@ describe('local link:/file: matching stays cheap as the catalog grows (#589)', (
     expect(catalogEntryForInstalled(plugins, 'solo', spec, [], [''])).toBeUndefined()
     // Re-ask in the other order: the cached answers must not have merged.
     expect(catalogEntryForInstalled(plugins, 'solo', spec, [], [])?.url).toBe('https://github.com/a/solo')
+  })
+})
+
+describe('installCommandFor (#872)', () => {
+  const catalog = 'dsh plugin --profile web add dsh-answer-reviewer'
+
+  it('names the profile this page actually runs in', () => {
+    // awesome-dsh-plugin writes the command once, for `web`. On any other
+    // profile — and the report's was `desktop` — copying it verbatim
+    // installed into the wrong place or nowhere at all.
+    expect(installCommandFor(catalog, 'work').command).toBe('dsh plugin --profile work add dsh-answer-reviewer')
+    expect(installCommandFor(catalog, 'web').command).toBe(catalog)
+  })
+
+  it('offers no command at all on a desktop profile, because none can work', () => {
+    // The DSH CLI refuses a profile by that name, so the command as printed
+    // cannot install anything there — handing it over would be worse than
+    // handing over nothing.
+    expect(installCommandFor(catalog, 'desktop')).toEqual({ command: null, unusable: true })
+    expect(installCommandFor(catalog, 'Desktop')).toEqual({ command: null, unusable: true })
+  })
+
+  it('leaves a command with no --profile token alone', () => {
+    const bare = 'dsh plugin add dsh-answer-reviewer'
+    expect(installCommandFor(bare, 'work')).toEqual({ command: bare, unusable: false })
+    expect(installCommandFor(bare, 'desktop')).toEqual({ command: bare, unusable: false })
+  })
+
+  it('keeps the catalog text when the profile is unknown', () => {
+    expect(installCommandFor(catalog, null).command).toBe(catalog)
+    expect(installCommandFor(catalog, '').command).toBe(catalog)
+    expect(installCommandFor(undefined, 'work')).toEqual({ command: null, unusable: false })
+    expect(installCommandFor('', 'work')).toEqual({ command: null, unusable: false })
+  })
+
+  it('handles the --profile=name spelling', () => {
+    expect(installCommandFor('dsh plugin --profile=web add x', 'work').command)
+      .toBe('dsh plugin --profile work add x')
   })
 })

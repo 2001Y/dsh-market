@@ -545,6 +545,38 @@ describe('MarketSection (jsdom)', () => {
     expect(screen.getAllByRole('button', { name: en.install }).length).toBeGreaterThanOrEqual(3)
   })
 
+  it('hides host-incompatible plugins by default, and says how many it hid (#872)', async () => {
+    // The report measured the default list on a live 0.2.0-rc.2 host: 175
+    // discovered plugins, 45 declaring that host. The filter existed but was
+    // opt-in, so the default list was mostly entries that cannot be
+    // installed, with nothing at list level saying so.
+    stubFetch({
+      '/dsh-market/discovery-compatibility': {
+        hostVersion: '0.1.2-alpha.2',
+        plugins: {
+          'dsh-loop': { status: 'incompatible', basis: 'manifest', requirement: '^0.9.0', declarations: ['^0.9.0'] },
+        },
+      },
+    })
+    render(<MarketSection {...props()} />)
+
+    // The gated entry is gone; the ones that declare nothing stay (the
+    // filter hides what is CONFIRMED incompatible, not what is silent).
+    // The scan answers asynchronously, so the line that reports it is also
+    // the signal that the filter has been applied.
+    await waitFor(() => { if (!document.body.textContent?.includes('Hidden') && !document.body.textContent?.includes('Hid')) throw new Error('x') }, { timeout: 2000 }).catch(() => {})
+    expect(await screen.findByText(en.hostFilterActive.replace('{0}', '0.1.2-alpha.2').replace('{1}', '1'))).toBeTruthy()
+    expect(screen.queryByText('dsh-loop')).toBeNull()
+    expect(screen.getByText('dsh-notify')).toBeTruthy()
+
+    // Turning it off brings the entry back AND sticks: a user who disagreed
+    // with the default must not be argued with on every page load.
+    fireEvent.click(screen.getByRole('button', { name: en.filter }))
+    fireEvent.click(await screen.findByText(en.hostAll))
+    await waitFor(() => expect(screen.getByText('dsh-loop')).toBeTruthy())
+    expect(localStorage.getItem('dshm-host-filter')).toBe('all')
+  })
+
   it('opens Discover with the host-provided plugin query', async () => {
     render(<MarketSection {...props()} preferredSubsectionId="discover:dsh-loop" />)
 

@@ -510,6 +510,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			confirmInstall: "确认安装",
 			cmdDetails: "安装命令",
 			cmdCopy: "复制安装命令",
+			cmdDesktopUnavailable: "桌面端的插件由应用自己安装（用上面的「安装」按钮）；`dsh plugin` 不接受桌面端这个 profile。",
 			cmdCopied: "已复制",
 			catsMore: "更多分类",
 			catsLess: "收起",
@@ -523,7 +524,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			hostDetecting: "正在识别宿主版本…",
 			hostUnknown: "宿主版本未知",
 			hostFilterLoading: "正在检查宿主要求 {0}/{1}；未声明或无法确认的插件仍会显示",
-			hostFilterActive: "已按 DSH {0} 筛选；未声明或无法确认兼容性的插件仍会显示",
+			hostFilterActive: "已隐藏 {1} 个与 DSH {0} 不兼容的插件；未声明版本的仍在列表里",
 			hostRequirement: "DSH {0}",
 			hostRequirementLoading: "正在读取宿主要求…",
 			hostRequirementUndeclared: "未声明宿主要求",
@@ -1238,6 +1239,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			confirmInstall: "Confirm install",
 			cmdDetails: "Install command",
 			cmdCopy: "Copy install command",
+			cmdDesktopUnavailable: "The desktop app installs plugins itself — use the Install button above; `dsh plugin` refuses this profile.",
 			cmdCopied: "Copied",
 			catsMore: "More categories",
 			catsLess: "Fewer categories",
@@ -1251,7 +1253,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			hostDetecting: "Detecting host version…",
 			hostUnknown: "Host version unknown",
 			hostFilterLoading: "Checking host requirements {0}/{1}; undeclared or unavailable plugins remain visible",
-			hostFilterActive: "Filtered for DSH {0}; undeclared or unconfirmed plugins remain visible",
+			hostFilterActive: "Hid {1} plugins incompatible with DSH {0}; those declaring no version stay listed",
 			hostRequirement: "DSH {0}",
 			hostRequirementLoading: "Reading host requirement…",
 			hostRequirementUndeclared: "Host requirement undeclared",
@@ -1900,6 +1902,53 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			if (!state.restartReachable) return "restartHintViaProxy";
 			if (state.supervisor !== null) return "restartHintSupervised";
 			return "restartHint";
+		}
+		/**
+		* The install command shown on a plugin's card, corrected for THIS profile
+		* (#872).
+		*
+		* awesome-dsh-plugin generates the string once, for the catalog — always
+		* `dsh plugin --profile web add <spec>` — which is right on a `web` profile
+		* and wrong on every other one. On a desktop profile it is more than wrong:
+		* the DSH CLI refuses a profile by that name, so the command as printed
+		* cannot install anything there at all. Two outcomes, and the caller renders
+		* them differently because the user's next step differs:
+		*
+		* - `command`: the text to show and copy, with the profile it names corrected;
+		* - `unusable`: show no command at all (the market's own button is the way),
+		*   because handing over a command that cannot work is worse than handing
+		*   over none.
+		*
+		* A command with no `--profile` token is passed through untouched: it is not
+		* this function's business to add one.
+		*/
+		function installCommandFor(command, profile) {
+			if (typeof command !== "string" || command.trim() === "") return {
+				command: null,
+				unusable: false
+			};
+			const named = /--profile(?:=|\s+)(\S+)/u.exec(command);
+			if (named === null) return {
+				command,
+				unusable: false
+			};
+			const wanted = typeof profile === "string" ? profile.trim() : "";
+			if (wanted === "") return {
+				command,
+				unusable: false
+			};
+			if (wanted.toLowerCase() === "desktop") return {
+				command: null,
+				unusable: true
+			};
+			if (named[1] === wanted) return {
+				command,
+				unusable: false
+			};
+			return {
+				command: command.replace(named[0], `--profile ${wanted}`),
+				unusable: false
+			};
 		}
 		function groupSwitchState(members, disabled) {
 			const list = members ?? [];
@@ -8258,6 +8307,21 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			const names = body.runningAgents.map(String).filter((name) => name !== "");
 			return names.length === 0 ? void 0 : names;
 		}
+		/**
+		* Whether the "compatible with this host" filter starts on, and remembers the
+		* answer once the user disagrees with the default (#872).
+		*
+		* Storage may be unavailable (private mode, a locked-down webview); the
+		* default is what matters, so a failure to read it is not a failure.
+		*/
+		const HOST_FILTER_KEY = "dshm-host-filter";
+		function readHostFilterPreference() {
+			try {
+				return localStorage.getItem(HOST_FILTER_KEY) !== "all";
+			} catch {
+				return true;
+			}
+		}
 		function MarketSection(props) {
 			const t = props.t;
 			const initialWebdav = (0, react.useMemo)(savedWebdav, []);
@@ -8811,7 +8875,16 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			/** Undefined while the first catalog response is pending; null means the host cannot be located. */
 			const [hostVersion, setHostVersion] = (0, react.useState)(void 0);
 			/** v1 is deliberately opt-in: undeclared/unknown entries stay visible even when enabled. */
-			const [compatibleWithHost, setCompatibleWithHost] = (0, react.useState)(false);
+			const [compatibleWithHost, setCompatibleWithHostState] = (0, react.useState)(readHostFilterPreference);
+			const setCompatibleWithHost = (0, react.useCallback)((next) => {
+				setCompatibleWithHostState(next);
+				try {
+					localStorage.setItem(HOST_FILTER_KEY, next ? "compatible" : "all");
+				} catch {}
+			}, []);
+			/** The profile this page is running in, for the manual command's own
+			* `--profile` token (#872). The catalog's is always `web`. */
+			const [profileName, setProfileName] = (0, react.useState)(null);
 			const [hostCompatibility, setHostCompatibility] = (0, react.useState)({});
 			const [hostCompatibilityPending, setHostCompatibilityPending] = (0, react.useState)(0);
 			/** Names already resolved or in flight; failed/unavailable names are released for an explicit retry. */
@@ -8880,6 +8953,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					}
 					if (body.notes !== null && typeof body.notes === "object" && !Array.isArray(body.notes)) setNotes(body.notes);
 					if (Array.isArray(body.patchDisabled)) setPatchDisabledNames(body.patchDisabled);
+					if (typeof body.profile === "string") setProfileName(body.profile);
 					if (Array.isArray(body.unbundled)) setUnbundledNames(body.unbundled);
 					setConfigNamespaceIssues(Array.isArray(body.configNamespaces) ? body.configNamespaces.filter((item) => typeof item === "object" && item !== null && typeof item.name === "string" && Array.isArray(item.namespaces)) : []);
 					if (body.groups && typeof body.groups === "object") setGroups(body.groups);
@@ -9250,16 +9324,37 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				qInstalled,
 				installedView
 			]);
-			const pluginsAll = (0, react.useMemo)(() => data === null ? [] : visiblePlugins(data.plugins, {
-				category: cat,
-				query: q,
-				lang,
-				categories: data.categories,
-				sort: `${sortField}-${sortDir}`,
-				sinceDays: timeRange === "all" ? void 0 : TIME_RANGE_DAYS[timeRange],
-				hostCompatibility,
-				compatibleWithHost
-			}), [
+			const { plugins: pluginsAll, hostHiddenCount } = (0, react.useMemo)(() => {
+				if (data === null) return {
+					plugins: [],
+					hostHiddenCount: 0
+				};
+				const query = {
+					category: cat,
+					query: q,
+					lang,
+					categories: data.categories,
+					sort: `${sortField}-${sortDir}`,
+					sinceDays: timeRange === "all" ? void 0 : TIME_RANGE_DAYS[timeRange],
+					hostCompatibility
+				};
+				const unfiltered = visiblePlugins(data.plugins, {
+					...query,
+					compatibleWithHost: false
+				});
+				if (!compatibleWithHost) return {
+					plugins: unfiltered,
+					hostHiddenCount: 0
+				};
+				const filtered = visiblePlugins(data.plugins, {
+					...query,
+					compatibleWithHost: true
+				});
+				return {
+					plugins: filtered,
+					hostHiddenCount: unfiltered.length - filtered.length
+				};
+			}, [
 				data,
 				q,
 				cat,
@@ -12871,7 +12966,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 										})]
 									}), compatibleWithHost && typeof hostVersion === "string" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 										className: Market_module_css_default.hostFilterNote,
-										children: hostCompatibilityPending > 0 || loadedHostPackages < allHostPackages.length ? t("hostFilterLoading").replace("{0}", String(loadedHostPackages)).replace("{1}", String(allHostPackages.length)) : t("hostFilterActive").replace("{0}", hostVersion)
+										children: hostCompatibilityPending > 0 || loadedHostPackages < allHostPackages.length ? t("hostFilterLoading").replace("{0}", String(loadedHostPackages)).replace("{1}", String(allHostPackages.length)) : t("hostFilterActive").replace("{0}", hostVersion).replace("{1}", String(hostHiddenCount))
 									})]
 								})]
 							}),
@@ -14124,17 +14219,28 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 										title: t("cmdDetails"),
 										open: cmdOpen,
 										onToggle: () => setCmdOpen((o) => !o),
-										children: /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
-											className: Market_module_css_default.confirmCmd,
-											children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
-												className: Market_module_css_default.cmd,
-												children: confirming.install
-											}), typeof confirming.install === "string" && confirming.install !== "" && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmCopyButton, {
-												text: confirming.install,
-												label: t("cmdCopy"),
-												copiedLabel: t("cmdCopied")
-											})]
-										})
+										children: (() => {
+											const shown = installCommandFor(confirming.install, profileName);
+											if (shown.unusable) return /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+												className: Market_module_css_default.confirmCmd,
+												children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+													className: Market_module_css_default.cmd,
+													children: t("cmdDesktopUnavailable")
+												})
+											});
+											if (shown.command === null) return null;
+											return /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+												className: Market_module_css_default.confirmCmd,
+												children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+													className: Market_module_css_default.cmd,
+													children: shown.command
+												}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)(ConfirmCopyButton, {
+													text: shown.command,
+													label: t("cmdCopy"),
+													copiedLabel: t("cmdCopied")
+												})]
+											});
+										})()
 									})]
 								}),
 								(looksTerminal(confirming, lang) || confirming.deprecated === true) && /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
