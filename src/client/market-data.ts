@@ -203,6 +203,9 @@ export interface UpdateStatus {
   latest?: string | null
   /** A plain dependency, not a plugin (#793): a newer release may exist but is never offered. */
   notAPlugin?: boolean
+  /** A newer build on a tag other than `latest` (#867): named so a pin ahead of
+      `latest` does not read as "up to date", never an automatic offer. */
+  newerPrerelease?: string
   /** Floating git install whose line moved without a release (#824): the
       unreleased HEAD, shown as a neutral badge — newer commits exist, but the
       market installs versions, not branch heads. */

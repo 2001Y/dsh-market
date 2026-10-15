@@ -7073,7 +7073,26 @@ export function MarketSection(props: MarketSectionProps) {
                                           ? null
                                           : status?.unreleasedCommit != null
                                             ? <span className={css.metaTag} title={t('unreleasedCommitsHint')}>{t('unreleasedCommits').replace('{0}', displayLatest(status.unreleasedCommit))}</span>
-                                            : <span className={css.metaTag} title={t('upToDate')}>{t('upToDate')}</span>}
+                                            : status?.newerPrerelease !== undefined
+                                              // "Up to date" is true against `latest` and false
+                                              // for the reader: their pin is ahead of it, which
+                                              // means they are on a line `latest` does not name
+                                              // (#867). Name that line's newest build instead,
+                                              // and leave the decision with them — installing it
+                                              // is one click, and the market still does not
+                                              // offer anyone's prerelease by itself.
+                                              ? (
+                                                  <>
+                                                    <span className={css.metaTag} title={t('newerPrereleaseHint')}>{t('newerPrereleaseAvailable').replace('{0}', status.newerPrerelease)}</span>
+                                                    <Button
+                                                      variant="outline"
+                                                      size="sm"
+                                                      disabled={updatingName !== null || removingName !== null || busyUrl !== null}
+                                                      onClick={() => doUpdate(name, false, false, status.newerPrerelease)}
+                                                    >{t('install')}</Button>
+                                                  </>
+                                                )
+                                              : <span className={css.metaTag} title={t('upToDate')}>{t('upToDate')}</span>}
                                 {removingName === name && <span className={css.metaTag}>{t('uninstalling')}</span>}
                                 </span>
                                 </div>

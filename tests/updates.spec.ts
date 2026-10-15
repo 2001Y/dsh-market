@@ -188,6 +188,58 @@ describe('checkUpdates — github pins', () => {
     })
   })
 
+  // #867: the package's own `latest` tag lagged the line it publishes on
+  // (`...-profile`: latest 0.1.5-alpha.2, alpha 0.2.1-alpha.4), so a user
+  // pinned at 0.2.1-alpha.2 was told "up to date" while their line moved.
+  describe('a newer build than `latest` on another tag (#867)', () => {
+    /** Registry stub: a plain name spec, with per-tag answers and a request log. */
+    function tagRegistry(tags: Record<string, string | number>): { asked: string[] } {
+      const asked: string[] = []
+      vi.stubGlobal('fetch', vi.fn(async (url: unknown) => {
+        const href = String(url)
+        asked.push(href)
+        const match = /registry\.npmjs\.org\/themer\/([^/?]+)/.exec(href)
+        if (match === null) return new Response('{}', { status: 200 })
+        const answer = tags[match[1]!]
+        if (typeof answer !== 'string') return new Response('not found', { status: typeof answer === 'number' ? answer : 404 })
+        return new Response(JSON.stringify({ version: answer }), { status: 200 })
+      }))
+      return { asked }
+    }
+
+    it('names the tag build without offering it as an update', async () => {
+      const { asked } = tagRegistry({ latest: '0.1.5-alpha.2', alpha: '0.2.1-alpha.4', next: 404, beta: 404, canary: 404 })
+      const result = await checkUpdates('web', true, profileWith('themer', null, '0.2.1-alpha.2'))
+      expect(result.themer).toMatchObject({
+        kind: 'npm', version: '0.2.1-alpha.2', latest: '0.1.5-alpha.2',
+        updateAvailable: false, newerPrerelease: '0.2.1-alpha.4',
+      })
+      expect(asked.some(url => url.endsWith('/themer/alpha'))).toBe(true)
+    })
+
+    it('says nothing when the tag line is not ahead of what is installed', async () => {
+      tagRegistry({ latest: '0.1.5-alpha.2', alpha: '0.2.1-alpha.2', next: '0.2.0-rc.2' })
+      const result = await checkUpdates('web', true, profileWith('themer', null, '0.2.1-alpha.2'))
+      expect(result.themer).toMatchObject({ updateAvailable: false })
+      expect(result.themer?.newerPrerelease).toBeUndefined()
+    })
+
+    it('picks the highest tag, not the first one that answers', async () => {
+      tagRegistry({ latest: '0.1.5-alpha.2', next: '0.2.0-rc.2', alpha: '0.2.1-alpha.4', beta: 404, canary: 404 })
+      const result = await checkUpdates('web', true, profileWith('themer', null, '0.2.1-alpha.2'))
+      expect(result.themer?.newerPrerelease).toBe('0.2.1-alpha.4')
+    })
+
+    it('asks no tag at all for a plain release sitting on latest', async () => {
+      // The whole point of the gate: a profile of ordinary plugins pays
+      // nothing for a field none of them can use.
+      const { asked } = tagRegistry({ latest: '1.0.0' })
+      const result = await checkUpdates('web', true, profileWith('themer', null, '1.0.0'))
+      expect(result.themer).toMatchObject({ updateAvailable: false })
+      expect(asked.filter(url => /\/themer\/(next|alpha|beta|canary)/.test(url))).toEqual([])
+    })
+  })
+
   it('keeps local packages without a catalog source and link workspaces local', async () => {
     for (const spec of ['link:../themer', 'file:/tmp/themer.tgz']) {
       const result = await checkUpdates('web', true, profileWith(spec, OLD))

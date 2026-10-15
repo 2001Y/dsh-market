@@ -53,6 +53,18 @@ export interface UpdateStatus {
    * the profile were damaged when nothing was touched.
    */
   notAPlugin?: true
+  /**
+   * A newer build exists on a tag other than `latest` (#867).
+   *
+   * Some packages leave `latest` pointing at an older line than the one they
+   * actually publish on: `@deepseek-ai/dsh-experimental-agent-team-profile`
+   * answers `latest` with 0.1.5-alpha.2 while `alpha` is 0.2.1-alpha.4, so a
+   * user who installed 0.2.1-alpha.2 reads "up to date" while the line they
+   * are following has moved. Named, and never `updateAvailable`: the market's
+   * channels are the market's own, and this is the fact, not an upgrade the
+   * market decided to offer.
+   */
+  newerPrerelease?: string
   /** Taking this update replaces a local package source with its matched online release. */
   restoreRequired?: boolean
   /** Independent, explicit source switch offered for verified legacy Git installs. */
@@ -357,6 +369,40 @@ export async function fetchNpmLatest(name: string): Promise<string | null> {
   }
 }
 
+/**
+ * Tags a package may publish a prerelease line under, in no order — the
+ * versions decide. DSH's own packages use `next` and `alpha`; `beta` and
+ * `canary` are the other two conventions in the wild. Short on purpose:
+ * every tag that does not exist costs one 404.
+ */
+const PRERELEASE_TAGS = ['next', 'alpha', 'beta', 'canary'] as const
+
+/**
+ * The newest build above `installed` that some tag other than `latest`
+ * points at, or null (#867).
+ *
+ * A fact about the registry, not a channel decision: this is what makes the
+ * difference visible to someone whose installed pin is ahead of `latest`
+ * without the market volunteering anyone's prerelease as an update.
+ */
+export async function newerPrereleaseFor(name: string, installed: string | null): Promise<string | null> {
+  if (installed === null) return null
+  const versions = await Promise.all(PRERELEASE_TAGS.map(async tag => {
+    try {
+      const meta = (await fetchJson(npmUrl(`${encodeURIComponent(name)}/${tag}`))) as { version?: string }
+      return typeof meta.version === 'string' ? meta.version : null
+    } catch {
+      return null
+    }
+  }))
+  let best: string | null = null
+  for (const version of versions) {
+    if (version === null || !isUpgrade(installed, version)) continue
+    if (best === null || isUpgrade(best, version)) best = version
+  }
+  return best
+}
+
 /** How long one raw-file route may take before the next candidate is tried. */
 const RAW_VERSION_TIMEOUT_MS = 6_000
 
@@ -627,9 +673,17 @@ export async function checkUpdates(
         const upgrade = isUpgrade(version, latest)
         const sideways = channel !== undefined && !upgrade
           && version !== null && latest !== null && version !== latest
+        // Only asked when the answer could differ from "up to date": a pin
+        // that carries a prerelease tag, or one sitting ABOVE `latest` — the
+        // two shapes that mean the user is on a line `latest` does not name.
+        // Everything else keeps paying nothing for a field it cannot use.
+        const mayFollowATag = !upgrade
+          && (version?.includes('-') === true || (stable !== null && version !== null && isUpgrade(stable, version) === false && stable !== version))
+        const newerPrerelease = mayFollowATag ? await newerPrereleaseFor(name, version) : null
         result[name] = {
           kind: 'npm', version, current: version, latest,
           updateAvailable: upgrade,
+          ...(newerPrerelease === null ? {} : { newerPrerelease }),
           ...(sideways ? { channelSwitch: latest } : {}),
         }
       }

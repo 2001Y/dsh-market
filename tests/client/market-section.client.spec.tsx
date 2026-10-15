@@ -1630,6 +1630,36 @@ describe('MarketSection (jsdom)', () => {
     })
   })
 
+  it('names a newer prerelease instead of "up to date", and installs that exact version (#867)', async () => {
+    // The pinned install is AHEAD of npm's `latest` (0.2.1-alpha.2 vs
+    // 0.1.5-alpha.2), which means the reader follows a line `latest` does not
+    // name. "Up to date" is true against the tag and false for them, so the
+    // card says which build their line published and leaves the click to them.
+    stubFetch({
+      '/dsh-market/installed': { profile: 'web', installed: { 'dsh-loop': '0.2.1-alpha.2' }, live: [] },
+      '/dsh-market/updates': {
+        updates: {
+          'dsh-loop': {
+            kind: 'npm', version: '0.2.1-alpha.2', current: '0.2.1-alpha.2',
+            latest: '0.1.5-alpha.2', updateAvailable: false, newerPrerelease: '0.2.1-alpha.4',
+          },
+        },
+      },
+      '/dsh-market/update': { ok: true, activation: {} },
+    })
+    render(<MarketSection {...props()} />)
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    expect(await screen.findByText(re(en.newerPrereleaseAvailable.replace('{0}', '0.2.1-alpha.4')))).toBeTruthy()
+    expect(screen.queryByText(en.upToDate)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: en.install }))
+    await waitFor(() => {
+      const update = fetchCalls.find(call => call.path === '/dsh-market/update')
+      expect(update, 'the install never asked the update route').toBeTruthy()
+      expect(update!.body).toMatchObject({ name: 'dsh-loop', compatVersion: '0.2.1-alpha.4' })
+    })
+  })
+
   it('re-enables Restart now when a completed update leaves the last status poll busy (#440)', async () => {
     vi.useFakeTimers()
     try {
