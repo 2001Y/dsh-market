@@ -38,6 +38,7 @@ import { analyzeProfile, corePackageNames, type DuplicateName } from './check.ts
 import { applyBundleOrder, mergeOrder, readBundleRules, readBundleStack, validateOrder } from './order.ts'
 import { applyPreset, deletePreset, listPresets, previewPreset, savePreset } from './presets.ts'
 import { createProfileSnapshot, DEFAULT_MAX_SNAPSHOTS, deleteSnapshot, listSnapshots, restoreSnapshot } from './snapshot.ts'
+import { readHostRecoveryView, restoreHostRecoveryBackup } from './host-recovery.ts'
 import { trialValidate } from './trial.ts'
 import { catalogRepoKey, findCatalogEntryForLocal, findInstalledAlias, gitCommitOfTarget, githubCommitOfTarget, githubTargetAtCommit, gitAllowBuildsKey, gitRefOfTarget, gitTargetAtCommit, gitUpdateTarget, hostedRepoKey, lookupRepoFromUrl, pinnedAllowBuildsKeys, installTargetFor, isGenerationLink, isLocalSpec, NPM_NAME_RE, repoOfTarget, restoreBlockedByWorkspace, restoreTargetForLocal, sourceFallbackFor, workspaceProtocolDeps } from './sources.ts'
 import { failureDetail, groupConflictsByOwner, isStaleUpdate, parseIgnoredBuildEntries, parseIgnoredBuilds, parsePrepareKey, parsePrepareNotAllowed, pnpmBlockedByOpenFiles, pnpmNeverStarted, RELEASE_AGE_OVERRIDE, removeDanglingHostBridge, retargetCollections, validateAddedPlugins, withHoistRecovery } from './install.ts'
@@ -3026,6 +3027,63 @@ export function mountMarketRoutes(
             pendingRollbacks.clear()
             const restored = restoreSnapshot(activeProfileDir, body.snapshot)
             if (restored.ok) {
+              invalidateUpdates()
+              refreshMarketState()
+            }
+            sendJson(response, restored.ok ? 200 : 400, restored)
+          })
+        } catch (error) {
+          sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }),
+
+    // #875: DSH's own fatal recovery replaces the profile patch with a stub
+    // and renames the user's file to a `.bak-<epoch ms>` sibling, then boots
+    // normally — so the loss is silent by construction. This is the read half
+    // of the way back: what the patch looks like now, and what the backups
+    // beside it still hold.
+    registerRoute({
+      kind: 'exact',
+      path: '/dsh-market/host-recovery',
+      handler: (request, response) => {
+        if (request.method !== 'GET') {
+          response.writeHead(405, { allow: 'GET' })
+          response.end()
+          return
+        }
+        sendJson(response, 200, readHostRecoveryView(userPatchPath))
+      },
+    }),
+
+    // The write half: put one backup back in place of the stub. Same mutation
+    // lock as every other direct write (a pnpm operation in flight would be
+    // reading the same file), same origin check, and the profile snapshot is
+    // taken inside the restore itself so the two can never come apart.
+    registerRoute({
+      kind: 'exact',
+      path: '/dsh-market/host-recovery/restore',
+      handler: async (request, response) => {
+        if (request.method !== 'POST') {
+          response.writeHead(405, { allow: 'POST' })
+          response.end()
+          return
+        }
+        if (!sameOrigin(request)) {
+          sendJson(response, 403, { error: 'untrusted origin' })
+          return
+        }
+        try {
+          await withMutationLock(response, 'write', async () => {
+            const body = (await readJsonBody(request)) as { name?: unknown } | null
+            if (body === null || typeof body !== 'object' || typeof body.name !== 'string' || body.name === '') {
+              sendJson(response, 400, { error: 'backup name is required / 需要备份文件名' })
+              return
+            }
+            const restored = restoreHostRecoveryBackup(userPatchPath, activeProfileDir, body.name, maxSnapshots)
+            if (restored.ok) {
+              // The patch is what the loader composes from: the rows take
+              // effect the way any other patch write does.
               invalidateUpdates()
               refreshMarketState()
             }

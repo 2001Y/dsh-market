@@ -737,6 +737,17 @@ export const zh = {
   recoveryApplyFailed: '保存失败：',
   recoveryWriteFailed: '上次的选择没有全部保存，因此没有重启：',
   recoveryTimeout: '等待 DeepSeek Harness 启动超时。可点「调整插件」，检查是否某个插件导致无法启动。',
+  // #875: DSH's own fatal recovery renames the profile patch away and writes a
+  // stub. The wording says what happened, what is still there, and what takes
+  // effect if they restore it — the restored file may contain whatever broke
+  // the boot, which is why the snapshot is named in the same breath.
+  hostRecoveryTitle: '配置被换成了空壳',
+  hostRecoveryBody: '上次启动失败后，DSH 的恢复流程把配置换成了默认的。原来的 {0} 条还在备份里。',
+  hostRecoverySource: '备份：{0}，{1}',
+  hostRecoveryRestore: '恢复配置',
+  hostRecoveryRestored: '已恢复 {0} 条设置。刷新页面就能看到。',
+  hostRecoveryFail: '恢复失败：',
+  hostRecoveryNote: '恢复前会自动存快照，随时能退回。',
 }
 
 /** A dictionary key; zh is the source of truth, en mirrors it 1:1. */
@@ -1469,4 +1480,11 @@ export const en: Record<MarketKey, string> = {
   recoveryApplyFailed: 'Could not save: ',
   recoveryWriteFailed: 'The last choice was not saved in full, so nothing was restarted: ',
   recoveryTimeout: 'Timed out waiting for DeepSeek Harness to start. "Adjust plugins" can tell you whether one of them is what stops it.',
+  hostRecoveryTitle: 'Your configuration was replaced',
+  hostRecoveryBody: 'After the last failed start, DSH\'s recovery replaced your configuration with a default one. The previous {0} settings are still in the backup.',
+  hostRecoverySource: 'Backup: {0}, {1}',
+  hostRecoveryRestore: 'Restore configuration',
+  hostRecoveryRestored: 'Restored {0} settings. Refresh the page to see them.',
+  hostRecoveryFail: 'Restore failed: ',
+  hostRecoveryNote: 'A snapshot is taken first, so you can roll this back.',
 }

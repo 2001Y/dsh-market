@@ -234,6 +234,8 @@ describe('method & Allow contract', () => {
     ['/dsh-market/bundle-order', 'GET', 'POST'],
     ['/dsh-market/snapshots', 'DELETE', 'GET, POST'],
     ['/dsh-market/restore-snapshot', 'GET', 'POST'],
+    ['/dsh-market/host-recovery', 'POST', 'GET'],
+    ['/dsh-market/host-recovery/restore', 'GET', 'POST'],
     ['/dsh-market/delete-snapshot', 'GET', 'POST'],
     ['/dsh-market/presets', 'DELETE', 'GET, POST'],
   ])('answers 405 with an Allow header on %s', async (path, method, allow) => {
@@ -249,6 +251,7 @@ describe('origin enforcement (POST routes)', () => {
     ['/dsh-market/bundle-order', { order: ['beta', 'alpha'] }],
     ['/dsh-market/snapshots', undefined],
     ['/dsh-market/restore-snapshot', { snapshot: 'snapshot-x' }],
+    ['/dsh-market/host-recovery/restore', { name: 'cordis.patch.yml.bak-1' }],
     ['/dsh-market/delete-snapshot', { snapshot: 'snapshot-x' }],
     ['/dsh-market/presets', { action: 'save', name: 'p' }],
   ]
@@ -1207,5 +1210,59 @@ describe('a client that reads its config from a name nothing serves (#810)', () 
     expect((await getInstalled()).configNamespaces).toBeUndefined()
     const body = jsonBody(await hit(routes, '/dsh-market/check', { method: 'GET', url: '/dsh-market/check' }))
     expect(body.configNamespaces).toEqual([])
+  })
+})
+
+// --- #875: the host's own recovery moved the profile patch aside ---
+
+/** The stub `sanitizeProfile` writes, and the user patch it displaced. */
+const USER_PATCH_ROWS = [
+  '- insert:',
+  '    - id: llm-deepseek',
+  '- id: permission',
+  '  disabled: false',
+  '',
+].join('\n')
+
+describe('host recovery (#875)', () => {
+  const BACKUP = 'cordis.patch.yml.bak-1792065596554'
+
+  it('answers with the wipe shape and restores the patch it names', async () => {
+    writeProfile(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
+    writeFileSync(join(dir, 'cordis.patch.yml'), '# recovered\n')
+    writeFileSync(join(dir, BACKUP), USER_PATCH_ROWS)
+
+    const view = await hit(routes, '/dsh-market/host-recovery', { method: 'GET', url: '/dsh-market/host-recovery' })
+    expect(view.status).toBe(200)
+    expect(view.json()).toMatchObject({ offerRestore: true, lostRowIds: ['llm-deepseek', 'permission'] })
+
+    const res = await hit(routes, '/dsh-market/host-recovery/restore', post('/dsh-market/host-recovery/restore', { name: BACKUP }))
+    expect(res.status).toBe(200)
+    expect(res.json()).toMatchObject({ ok: true, restored: { rows: 2 } })
+    expect(readFileSync(join(dir, 'cordis.patch.yml'), 'utf8')).toBe(USER_PATCH_ROWS)
+
+    const after = await hit(routes, '/dsh-market/host-recovery', { method: 'GET', url: '/dsh-market/host-recovery' })
+    expect(after.json()).toMatchObject({ offerRestore: false })
+  })
+
+  it('says nothing on a profile its own recovery never touched', async () => {
+    writeProfile(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
+    const res = await hit(routes, '/dsh-market/host-recovery', { method: 'GET', url: '/dsh-market/host-recovery' })
+    expect(res.status).toBe(200)
+    expect(res.json()).toMatchObject({ offerRestore: false, backups: [] })
+  })
+
+  it('refuses a backup name that is not one of the files beside the patch', async () => {
+    writeProfile(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'])
+    writeFileSync(join(dir, 'cordis.patch.yml'), '# recovered\n')
+    writeFileSync(join(dir, BACKUP), USER_PATCH_ROWS)
+    const res = await hit(routes, '/dsh-market/host-recovery/restore', post('/dsh-market/host-recovery/restore', { name: '../package.json' }))
+    expect(res.status).toBe(400)
+    expect(readFileSync(join(dir, 'cordis.patch.yml'), 'utf8')).toBe('# recovered\n')
+  })
+
+  it('rejects a body that names no backup at all', async () => {
+    const res = await hit(routes, '/dsh-market/host-recovery/restore', post('/dsh-market/host-recovery/restore', {}))
+    expect(res.status).toBe(400)
   })
 })

@@ -45,6 +45,7 @@ import { SearchInput } from './SearchInput.tsx'
 import { downloadStatsText } from './download-stats.ts'
 import { OperationsPanel } from './OperationsPanel.tsx'
 import { applyRecovery, fetchRecovery, initialKeep, RecoveryPanel, watchRestart, type RecoveryView } from './RecoveryPanel.tsx'
+import { HostRecoveryBanner } from './HostRecoveryBanner.tsx'
 import { clearSettled, drop, enqueue, patch as patchRecord, recordForUrl } from './operations.ts'
 import type { OperationRecord } from './operations.ts'
 import { Diagnostics } from './Diagnostics.tsx'
@@ -5778,6 +5779,9 @@ export function MarketSection(props: MarketSectionProps) {
             </span>
           </div>
         )}
+        {/* #875: rendered only when DSH's own recovery replaced the profile
+            patch — for every other profile this is null. */}
+        <HostRecoveryBanner t={t} bootId={bootId} />
         {tab === 'installed' && pendingBackup !== null && (
           <div className={css.banner}>
             <IconRefreshOutline14 size={14} className={css.bannerIcon} />
