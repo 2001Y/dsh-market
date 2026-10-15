@@ -251,10 +251,28 @@ export function hostPeerGate(activeProfileDir: string, name: string, facts: Host
   return peerGateAt(join(activeProfileDir, 'node_modules', name), name, facts)
 }
 
+/**
+ * The unmet requirement, if any, and the remedy side it points at.
+ *
+ * Which side of the range the runtime sits on decides the remedy: below the
+ * floor, upgrading the host genuinely helps; above the cap (#757's own
+ * shape) no upgrade can satisfy it, and suggesting one points the wrong way
+ * (#758).
+ */
+function unmetOf(peer: string, range: string, runtimeVersion: string): PeerGate {
+  const floor = /[0-9]+\.[0-9]+\.[0-9]+[-+0-9A-Za-z.]*/.exec(range)
+  const hostTooOld = floor !== null && compareSemver(runtimeVersion, floor[0]) < 0
+  return { peer, range, runtimeVersion, hostTooOld }
+}
+
 /** Same prediction for a patch plugin resolved outside the profile's flat node_modules. */
 function peerGateAt(packageDir: string, name: string, facts: HostRuntimeFacts): PeerGate | null {
   if (facts.runtimeVersion === null) return null
-  let manifest: { version?: unknown; peerDependencies?: Record<string, unknown> }
+  let manifest: {
+    version?: unknown
+    engines?: Record<string, unknown>
+    peerDependencies?: Record<string, unknown>
+  }
   try {
     manifest = JSON.parse(
       readFileSync(join(packageDir, 'package.json'), 'utf8'),
@@ -266,20 +284,30 @@ function peerGateAt(packageDir: string, name: string, facts: HostRuntimeFacts): 
   if (version !== '' && (facts.exemptions[`${name}@${version}`] ?? []).includes(facts.runtimeVersion)) {
     return null
   }
+  // An own `engines.dsh` range decides ALONE and peerDependencies are then
+  // ignored — the host's rule, read from unmetRequirements in
+  // @deepseek-ai/dsh-app-boot, and the reason a gate that only read peers
+  // was too lenient on 62 of 2796 (package, runtime) pairs measured over the
+  // live catalog: `dsh-file-explorer-kit` (engines.dsh ^0.1.1) and
+  // `dsh-workspace-kit` (^0.1.2-rc.1) declare NO dsh peer at all, so the
+  // family that refuses them was invisible here and the card promised a
+  // restart the host would not honour. A non-string range throws inside the
+  // host's own evaluator; that is not a verdict this can predict, so the
+  // old answer stands (#757).
+  const engines = manifest.engines?.dsh
+  if (engines !== undefined) {
+    if (typeof engines !== 'string') return null
+    const range = engines.trim()
+    // `workspace:` is substituted only for PEERS: the host counts it as an
+    // unmet range for engines, so an empty or invalid range stays unmet too.
+    const satisfied = range === '' ? false : satisfiesRange(facts.runtimeVersion, range, { includePrerelease: true })
+    return satisfied ? null : unmetOf('engines.dsh', range, facts.runtimeVersion)
+  }
   for (const [peer, requirement] of Object.entries(manifest.peerDependencies ?? {})) {
     if (!isDshPeer(peer) || typeof requirement !== 'string') continue
     const range = requirement.trim()
     const satisfied = range === '' ? false : satisfiesRange(facts.runtimeVersion, range, { includePrerelease: true })
-    if (satisfied === false) {
-      // Which side of the range the runtime sits on decides the remedy:
-      // below the floor, upgrading the host genuinely helps; above the cap
-      // (#757's own shape) no upgrade can satisfy it, and suggesting one
-      // points the wrong way (#758).
-      const floor = /[0-9]+\.[0-9]+\.[0-9]+[-+0-9A-Za-z.]*/.exec(range)
-      let hostTooOld = false
-      if (floor !== null) hostTooOld = compareSemver(facts.runtimeVersion, floor[0]) < 0
-      return { peer, range, runtimeVersion: facts.runtimeVersion, hostTooOld }
-    }
+    if (satisfied === false) return unmetOf(peer, range, facts.runtimeVersion)
   }
   return null
 }

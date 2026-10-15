@@ -435,6 +435,63 @@ describe('verifyActivation (P0-2)', () => {
     expect(result.reasons.join(' ')).not.toMatch(/解决不了/)
   })
 
+  it('lets an own engines.dsh range decide alone, as the host does (#867)', () => {
+    // @deepseek-ai/dsh-app-boot's unmetRequirements: when a manifest declares
+    // `engines.dsh`, that range decides alone and peerDependencies are then
+    // ignored. Both halves matter, and the second one is the subtle one — a
+    // gate that read BOTH (or only peers) reports a plugin the host loads
+    // fine as incompatible.
+    const dir = profile(['dsh-capped'])
+    pkg('dsh-capped', {
+      version: '0.5.1',
+      engines: { dsh: '>=0.1.0-rc.6' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    expect(hostPeerGate(dir, 'dsh-capped', { runtimeVersion: '0.2.0', exemptions: {} })).toBeNull()
+
+    // The same manifest with a peer that CANNOT be satisfied: the host still
+    // loads it, because engines.dsh outranks the peer map entirely.
+    pkg('dsh-capped', {
+      version: '0.5.1',
+      engines: { dsh: '>=0.1.0-rc.6' },
+      peerDependencies: { '@deepseek-ai/dsh': '^0.1.0-rc.6' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    expect(hostPeerGate(dir, 'dsh-capped', { runtimeVersion: '0.2.0', exemptions: {} })).toBeNull()
+  })
+
+  it('reports an unusable engines.dsh range as the gate that refuses it (#867)', () => {
+    // The other direction, and the one that was invisible before: a package
+    // with NO dsh peer at all — dsh-file-explorer-kit declares
+    // `engines.dsh: ^0.1.1` and nothing else — whose engines range excludes
+    // the running host. The host skips it; the market used to promise a
+    // restart that could never apply it.
+    const dir = profile(['dsh-capped'])
+    pkg('dsh-capped', {
+      version: '0.5.1',
+      engines: { dsh: '^0.1.1' },
+      dsh: { bundle: { patch: './cordis.patch.yml' } },
+      main: 'index.js',
+    }, { 'index.js': '', 'cordis.patch.yml': SIMPLE_PATCH })
+    const gate = hostPeerGate(dir, 'dsh-capped', { runtimeVersion: '0.2.0', exemptions: {} })
+    expect(gate).toMatchObject({ peer: 'engines.dsh', range: '^0.1.1', hostTooOld: false })
+    const result = verifyActivation('web', 'dsh-capped', new Set(), undefined, false,
+      { runtimeVersion: '0.2.0', exemptions: {} })
+    expect(result).toMatchObject({ state: 'incompatible', hot: false, bundle: true })
+    // The user-facing sentence says "needs host ^0.1.1" — the API name for
+    // that requirement is not the user's word for it.
+    expect(result.reasons.join(' ')).toMatch(/\^0\.1\.1/)
+
+    // An indeterminate range keeps the old verdict instead of inventing a
+    // refusal (#757): a non-string range throws inside the host's evaluator,
+    // and `workspace:` is accepted for peers but never for engines.
+    expect(hostPeerGate(dir, 'dsh-capped', { runtimeVersion: '0.2.0', exemptions: {} })).not.toBeNull()
+    pkg('dsh-capped', { version: '0.5.1', engines: { dsh: 1 }, main: 'index.js' }, { 'index.js': '' })
+    expect(hostPeerGate(dir, 'dsh-capped', { runtimeVersion: '0.2.0', exemptions: {} })).toBeNull()
+  })
+
   it('incompatible without suggesting an upgrade when the runtime is above the range (#758)', () => {
     // The #757 shape itself: the running host already outruns the plugin's
     // cap, so no dsh upgrade can satisfy it. Offering "or upgrade dsh"

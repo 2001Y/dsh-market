@@ -520,6 +520,31 @@ function parseSemver(value: string): Semver | null {
   }
 }
 
+/**
+ * Parse a comparator's target the way node-semver does: a PARTIAL version in
+ * a range is zero-filled, so `<0.3` is `<0.3.0` and `>=2` is `>=2.0.0`.
+ *
+ * Without this, every prerelease floor written as a partial — the
+ * `@deepseek-ai/dsh-*` peers of a whole family of connector plugins say
+ * `>=0.1.5 <0.3`, `>=0.1.7-rc <2`, `>=0.2.0-rc.0 <0.3` — parsed as unknown,
+ * `satisfiesRange` answered null, and the gate stood aside: measured against
+ * the host's own evaluator over 699 live catalog manifests, those were the
+ * last 7 of 2796 (package, runtime) pairs where the host refuses a plugin
+ * and the market still promised a restart would apply it.
+ *
+ * A BARE partial (`1.2`) is a different thing in semver — an x-range that
+ * means `>=1.2.0 <1.3.0` — so it deliberately stays unknown here rather than
+ * being mistaken for the exact version `1.2.0`.
+ */
+function parseComparatorTarget(target: string, op: string): Semver | null {
+  const direct = parseSemver(target)
+  if (direct !== null) return direct
+  if (op === '') return null
+  const parts = target.trim().split('.')
+  if (parts.length > 3 || parts.some(part => !/^\d+$/u.test(part))) return null
+  return parseSemver([...parts, ...Array<string>(3 - parts.length).fill('0')].join('.'))
+}
+
 function comparePre(a: string[], b: string[]): number {
   const len = Math.max(a.length, b.length)
   for (let i = 0; i < len; i += 1) {
@@ -643,7 +668,7 @@ export function satisfiesRange(
     const m = /^(\^|~|>=|<=|>|<)?(.*)$/.exec(p)
     const op = m?.[1] ?? ''
     const target = (m?.[2] ?? '').trim()
-    const tv = parseSemver(target)
+    const tv = parseComparatorTarget(target, op)
     if (tv === null) return null
     const major = tv.major
     const minor = tv.minor
@@ -688,7 +713,7 @@ export function satisfiesRange(
     // prerelease admission gate. Otherwise an unknown protocol such as
     // `workspace:^` or `catalog:default` is misreported as a definite false
     // whenever the resolved version happens to carry a prerelease tag.
-    if (parseSemver(target) === null) return null
+    if (parseComparatorTarget(target, m[1] ?? '') === null) return null
     return { op: m[1] ?? '', target }
   }
 

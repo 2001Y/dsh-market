@@ -2131,6 +2131,28 @@ describe('pnpm-lock.yaml multi-version core packages', () => {
 })
 
 describe('satisfiesRange', () => {
+
+  it('zero-fills a partial version inside a comparator, as node-semver does', () => {
+    // The connector-plugin family's peers are written this way —
+    // `@deepseek-ai/dsh-llm: '>=0.1.5 <0.3'`, `'>=0.1.7-rc <2'`,
+    // `'>=0.2.0-rc.0 <0.3'` — and every one of them used to parse as
+    // UNKNOWN, which left the activation gate standing aside: measured
+    // against the host's own evaluator over 699 live catalog manifests, the
+    // market promised a restart would apply a plugin the host refuses.
+    expect(satisfiesRange('0.1.2-alpha.2', '>=0.1.5 <0.3', { includePrerelease: true })).toBe(false)
+    expect(satisfiesRange('0.1.2-alpha.2', '>=0.1.5-rc <2', { includePrerelease: true })).toBe(false)
+    expect(satisfiesRange('0.1.7-rc.2', '>=0.2.0-rc.0 <0.3', { includePrerelease: true })).toBe(false)
+    expect(satisfiesRange('0.2.9', '<0.3', { includePrerelease: true })).toBe(true)
+    expect(satisfiesRange('2.1.0', '>=2', { includePrerelease: true })).toBe(true)
+    expect(satisfiesRange('1.9.9', '>=2', { includePrerelease: true })).toBe(false)
+  })
+
+  it('keeps a BARE partial version unknown: `1.2` is an x-range, not `1.2.0`', () => {
+    // node-semver reads `1.2` as `>=1.2.0 <1.3.0`. Treating it as the exact
+    // version would be a different — and wrong — answer, so it stays unknown.
+    expect(satisfiesRange('1.2.0', '1.2', { includePrerelease: true })).toBeNull()
+    expect(satisfiesRange('1.2.0', '2', { includePrerelease: true })).toBeNull()
+  })
   it('matches caret ranges', () => {
     expect(satisfiesRange('1.2.3', '^1.2.0')).toBe(true)
     expect(satisfiesRange('1.9.9', '^1.2.0')).toBe(true)
