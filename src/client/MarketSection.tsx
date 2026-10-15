@@ -6080,6 +6080,12 @@ export function MarketSection(props: MarketSectionProps) {
                     ]}
                   />
                   <Input className={css.backupInput} icon={<IconLinkOutline14 size={14} />} type="url" value={webdavUrl} placeholder={t('webdavUrl')} onChange={e => setWebdavUrl(e.target.value)} />
+                  {/* The field had a placeholder and nothing else, so "is this a
+                      folder or a file?" was answered only by trying it — and a
+                      reporter who read it as a folder expected the market to
+                      name the file (#868). Name the shape, and say why the
+                      name has to stay put: restore looks for that same one. */}
+                  <p>{t('webdavPathHint')}</p>
                   <Input className={css.backupInput} autoComplete="username" value={webdavUser} placeholder={t('webdavUser')} onChange={e => setWebdavUser(e.target.value)} />
                   <Input className={css.backupInput} type="password" autoComplete="current-password" value={webdavPassword} placeholder={t('webdavPassword')} onChange={e => setWebdavPassword(e.target.value)} />
                   <div className={css.backupActions}>

@@ -201,6 +201,18 @@ describe('WebDAV daily backup (#868)', () => {
     expect(requests()).toHaveLength(2)
   })
 
+  it('says what the address field wants, in the words the reporter had to guess (#868)', async () => {
+    // "说明里面没有写清楚备份是个文件" — the field carried a placeholder and
+    // nothing else, so the shape (file, name included) and the reason the name
+    // cannot float were both left to trial and error.
+    localStorage.setItem('dshm-webdav', JSON.stringify(config))
+    stubFetch({ '/dsh-market/webdav': { ok: true } })
+    render(<MarketSection {...props()} />)
+    await openBackup()
+    expect(await screen.findByText(new RegExp(en.webdavPathHint))).toBeTruthy()
+    expect(screen.getByText(new RegExp(en.webdavPathHint)).textContent).toContain('name included')
+  })
+
   it.each([
     ['no previous success', null, true],
     ['less than 24 hours', now - day + 1, false],
