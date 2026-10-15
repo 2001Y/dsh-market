@@ -137,15 +137,29 @@ jobs:
         # line after this one.
         #
         # That gate is `evaluatePluginCompatibility` in dsh-app-boot, and it
-        # is worth knowing exactly what it does, because 0.2.1 is the first
-        # line to change underneath it: it checks every peer whose name is
-        # `@deepseek-ai/dsh` or starts with `@deepseek-ai/dsh-` by comparing
-        # the RUNTIME version against the declared range (not the peer
-        # package's own version), with `includePrerelease: true`. So
+        # is worth knowing exactly what it does: it checks every peer whose
+        # name is `@deepseek-ai/dsh` or starts with `@deepseek-ai/dsh-` by
+        # comparing the RUNTIME version against the declared range (not the
+        # peer package's own version), with `includePrerelease: true`. So
         # `@deepseek-ai/dsh-settings` is the one entry that decides whether the
-        # market loads at all — its range had to name the 0.2.1 line — while
-        # `@deepseek-ai/cordis` and `@deepseek-ai/schemastery` are not gated by
-        # it at all.
+        # market loads at all, while `@deepseek-ai/cordis` and
+        # `@deepseek-ai/schemastery` are not gated by it at all.
+        #
+        # `includePrerelease` is also why naming the 0.2.1 line is not what
+        # makes the market load here: the existing `^0.2.0-rc.1` entry already
+        # admits `0.2.1-alpha.4` under that rule. The name is for the OTHER
+        # reader of the same field — npm and pnpm apply the strict gate, where
+        # a prerelease only matches a comparator on its own [major,minor,patch]
+        # — and for the rule above: a line this repository runs in CI should be
+        # a line the manifest claims.
+        #
+        # The lane is red on this line, and the failure is not the market's:
+        # every failing spec times out on the HOST's own Settings button
+        # (`等待 getByRole('button', { name: /^(设置|Settings)$/ })`), before
+        # the market renders at all, while the route-driven specs pass on the
+        # same host — install 14/14, update 8/8, channel 7/7. Read it as "the
+        # market's server side works there and the web UI never became
+        # reachable in this harness", not as a compatibility verdict.
         #
         # 0.2.1 changed one thing this plugin touches, and it is the settings
         # service: `register` is gone (0.1.7 removed it for its own plugins;
