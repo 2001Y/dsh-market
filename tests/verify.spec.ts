@@ -5,11 +5,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { profileDir } from '../src/profile.ts'
 import { brokenClientBundles, checkClientBundle, clientBundlePath, configFormNamespaces, findUnservedConfigNamespaces, hostPeerGate, newlyBrokenBundles, verifyActivation } from '../src/verify.ts'
+import type { HostRuntimeFacts } from '../src/verify.ts'
 
 let home: string
 beforeEach(() => {
@@ -40,6 +41,213 @@ function pkg(name: string, manifest: unknown, files: Record<string, string> = {}
 
 const SIMPLE_PATCH = '- insert:\n  - id: \'x\'\n    name: \'y\'\n'
 const COMPLEX_PATCH = '- insert:\n  - id: \'x\'\n    name: \'y\'\n- config:\n    foo: bar\n'
+
+describe('bundle row peer gate (#867)', () => {
+  const bundle = '@deepseek-ai/dsh-experimental-agent-team-profile'
+  const children = [
+    '@deepseek-ai/dsh-experimental-agent-team',
+    '@deepseek-ai/dsh-experimental-tool-agent-team',
+    '@deepseek-ai/dsh-experimental-client-ui-agent-team',
+  ]
+  const runtimeVersion = '0.2.1-alpha.3'
+  const facts = { runtimeVersion, exemptions: {} }
+  const patch = `- id: tool-subagent\n  disabled: true\n- insert:\n${children.map((name, i) => `    - id: team-${i}\n      name: '${name}'`).join('\n')}\n`
+
+  // Published alpha.2 shape: only cordis is a peer of the carrier; its
+  // three inserted plugins pin dsh peers to alpha.2. No registry in tests.
+  function install(version = '0.2.1-alpha.2', patches: Record<string, string> = { 'cordis.patch.yml': patch }): string {
+    const dir = profile([bundle])
+    pkg(bundle, {
+      name: bundle, version, main: 'index.js',
+      peerDependencies: { '@deepseek-ai/cordis': '~4.0.5-alpha.1' },
+      dependencies: Object.fromEntries(children.map(name => [name, version])),
+      dsh: { bundle: { patch: Object.keys(patches) } },
+    }, { 'index.js': '', ...patches })
+    for (const name of children) child(name, version)
+    return dir
+  }
+
+  function child(name: string, version: string, peers: Record<string, string> = { '@deepseek-ai/dsh-agent': version }): void {
+    pkg(name, { name, version, main: 'index.js', peerDependencies: peers }, { 'index.js': '' })
+  }
+
+  const verify = (hostFacts: HostRuntimeFacts = facts, live = new Set<string>()) =>
+    verifyActivation('web', bundle, live, undefined, false, hostFacts)
+
+  it('rejects the alpha.2 trio on an alpha.3 host with a bilingual culprit and remedy', () => {
+    install()
+    expect(hostPeerGate(profileDir('web'), bundle, facts)).toBeNull()
+    const result = verify()
+    expect(result).toMatchObject({ state: 'incompatible', bundle: true, hot: false })
+    const reason = result.reasons.join(' ')
+    for (const text of [children[0]!, '@deepseek-ai/dsh-agent', '0.2.1-alpha.2', runtimeVersion,
+      '重启也不会生效', 'a restart will not activate it', '更新', 'update', '兼容', 'compatible']) {
+      expect(reason).toContain(text)
+    }
+    expect(reason).not.toContain('upgrade dsh,')
+  })
+
+  it.each(['0.2.1-alpha.2', '0.2.1-alpha.3'])('keeps compatible plugins on host %s restartable', host => {
+    install(host)
+    expect(verify({ runtimeVersion: host, exemptions: {} }).state).toBe('restart')
+  })
+
+  it('accepts the alpha.3 bundle on the alpha.3 host', () => {
+    install(runtimeVersion)
+    expect(verify().state).toBe('restart')
+  })
+
+  it('suggests upgrading dsh when the child requires a newer host', () => {
+    install(runtimeVersion)
+    const result = verify({ runtimeVersion: '0.2.1-alpha.2', exemptions: {} })
+    expect(result.state).toBe('incompatible')
+    expect(result.reasons.join(' ')).toContain('升级 dsh，或更新此插件包')
+    expect(result.reasons.join(' ')).toContain('upgrade dsh, or update this bundle')
+    expect(result.reasons.join(' ')).not.toContain('will not help')
+  })
+
+  it('accepts open dsh peers and ignores unrelated peers, including a string patch declaration', () => {
+    const dir = install()
+    for (const name of children) child(name, '0.2.1-alpha.2', {
+      '@deepseek-ai/dsh': '>=0.2.1-alpha.1', '@deepseek-ai/cordis': '1.0.0',
+    })
+    const manifest = join(dir, 'node_modules', bundle, 'package.json')
+    writeFileSync(manifest, JSON.stringify({ name: bundle, main: 'index.js', dsh: { bundle: { patch: 'cordis.patch.yml' } } }))
+    expect(verify().state).toBe('restart')
+  })
+
+  it('checks all three plugins, applying exemptions to each installed name and version', () => {
+    install()
+    const exemptions = Object.fromEntries(children.map(name => [`${name}@0.2.1-alpha.2`, [runtimeVersion]]))
+    expect(verify({ runtimeVersion, exemptions }).state).toBe('restart')
+    delete exemptions[`${children[2]}@0.2.1-alpha.2`]
+    const result = verify({ runtimeVersion, exemptions })
+    expect(result.state).toBe('incompatible')
+    expect(result.reasons.join(' ')).toContain(children[2])
+  })
+
+  it('does not extend a carrier exemption or another version exemption to its children', () => {
+    install()
+    expect(verify({ runtimeVersion, exemptions: {
+      [`${bundle}@0.2.1-alpha.2`]: [runtimeVersion],
+      [`${children[0]}@0.2.1-alpha.3`]: [runtimeVersion],
+    } }).state).toBe('incompatible')
+  })
+
+  it('keeps live carrier rows and disabled bundles ahead of predictions', () => {
+    install()
+    for (const live of [new Set([bundle]), new Set(['#team-0'])]) {
+      expect(verify(facts, live)).toMatchObject({ state: 'live', hot: true })
+    }
+    expect(verifyActivation('web', bundle, new Set(), undefined, true, facts).state).toBe('disabled')
+  })
+
+  it('keeps unknown hosts and unparseable child ranges conservative', () => {
+    install()
+    expect(verify({ runtimeVersion: null, exemptions: {} }).state).toBe('restart')
+    for (const name of children) child(name, '0.2.1-alpha.2', { '@deepseek-ai/dsh': 'unknown-range' })
+    expect(verify().state).toBe('restart')
+  })
+
+  it.each(['absent', 'missing manifest', 'invalid manifest'])('does not invent incompatibility for an %s dependency', state => {
+    install()
+    for (const name of children) {
+      const root = join(profileDir('web'), 'node_modules', name)
+      rmSync(join(root, 'package.json'))
+      if (state === 'absent') rmSync(root, { recursive: true })
+      if (state === 'invalid manifest') writeFileSync(join(root, 'package.json'), '{')
+    }
+    expect(verify().state).toBe('restart')
+  })
+
+  it('does not scan ordinary dependencies, payload names, or the user patch', () => {
+    const dir = install('0.2.1-alpha.2', {
+      'cordis.patch.yml': `- insert:\n  - id: preset\n    name: good\n    config:\n      plugins:\n      - name: '${children[0]}'\n      insert:\n      - name: '${children[1]}'\n  - id: options\n    name: good\n    config:\n    - name: '${children[2]}'\n`,
+    })
+    child('good', runtimeVersion)
+    writeFileSync(join(dir, 'cordis.patch.yml'), patch)
+    expect(verify().state).toBe('restart')
+  })
+
+  it('finds real group children and scoped and unscoped subpath entries', () => {
+    install('0.2.1-alpha.2', {
+      'cordis.patch.yml': `- insert: [{ id: g, group: true, config: [{ id: real, name: '${children[0]}/plugin' }] }]`,
+    })
+    expect(verify().state).toBe('incompatible')
+    install('0.2.1-alpha.2', { 'cordis.patch.yml': '- insert: [{ id: real, name: other/plugin.js }]' })
+    child('other', '0.2.1-alpha.2')
+    expect(verify().state).toBe('incompatible')
+  })
+
+  it('reads every declared patch and respects a later disable', () => {
+    install('0.2.1-alpha.2', { 'first.yml': '[]', 'nested/second.yml': patch })
+    expect(verify().state).toBe('incompatible')
+    install('0.2.1-alpha.2', {
+      'first.yml': patch,
+      'second.yml': children.map((_, i) => `- id: team-${i}\n  disabled: true`).join('\n'),
+    })
+    expect(verify().state).toBe('restart')
+  })
+
+  it.each(['missing', 'malformed'])('requires readable patch declarations (%s file)', state => {
+    const dir = install('0.2.1-alpha.2', { 'first.yml': patch, 'second.yml': '[]' })
+    const file = join(dir, 'node_modules', bundle, 'second.yml')
+    if (state === 'missing') rmSync(file)
+    else writeFileSync(file, '- insert: [')
+    expect(verify().state).toBe('restart')
+  })
+
+  it('does not predict rejection for disabled or expression-gated children', () => {
+    install('0.2.1-alpha.2', { 'cordis.patch.yml': `- insert:\n  - id: off\n    name: '${children[0]}'\n    disabled: true\n  - id: maybe\n    name: '${children[1]}'\n    disabled: !!js someCondition\n` })
+    expect(verify().state).toBe('restart')
+  })
+
+  it('does not borrow a fallback manifest when a nearer declared dependency is incomplete', () => {
+    const dir = install()
+    for (const name of children) mkdirSync(join(dir, 'node_modules', bundle, 'node_modules', name), { recursive: true })
+    expect(verify().state).toBe('restart')
+  })
+
+  it('ignores undeclared nested copies when the profile resolves compatible plugins', () => {
+    const dir = install(runtimeVersion)
+    const root = join(dir, 'node_modules', bundle)
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: bundle, main: 'index.js', dsh: { bundle: { patch: 'cordis.patch.yml' } } }))
+    const nested = join(root, 'node_modules', children[0]!)
+    mkdirSync(nested, { recursive: true })
+    writeFileSync(join(nested, 'package.json'), JSON.stringify({
+      name: children[0], version: '0.2.1-alpha.2', peerDependencies: { '@deepseek-ai/dsh': '0.2.1-alpha.2' },
+    }))
+    expect(verify().state).toBe('restart')
+  })
+
+  it.each(['nested', 'virtual store', 'workspace'])('resolves the patch plugin from a %s layout without requiring exports', layout => {
+    const dir = install()
+    const name = children[0]!
+    // Compatible root copies must not hide the carrier's pinned dependency.
+    for (const other of children) child(other, runtimeVersion)
+    let root = join(dir, 'node_modules', bundle)
+    if (layout === 'virtual store') {
+      const real = join(dir, 'node_modules', '.pnpm', 'team-profile@alpha.2', 'node_modules', bundle)
+      mkdirSync(join(real, '..'), { recursive: true })
+      // Move only this test's package, then link it as pnpm does.
+      renameSync(root, real)
+      symlinkSync(real, root, 'junction')
+      root = join(real, '..', '..', '..')
+    } else if (layout === 'workspace') {
+      rmSync(join(dir, 'node_modules', name), { recursive: true })
+      root = join(dir, '..')
+    }
+    const target = join(root, 'node_modules', name)
+    mkdirSync(target, { recursive: true })
+    writeFileSync(join(target, 'package.json'), JSON.stringify({
+      name, version: '0.2.1-alpha.2', exports: { '.': './plugin.js' },
+      peerDependencies: { '@deepseek-ai/dsh-agent': '0.2.1-alpha.2' },
+    }))
+    const result = verify()
+    expect(result.state).toBe('incompatible')
+    expect(result.reasons.join(' ')).toContain(name)
+  })
+})
 
 describe('verifyActivation (P0-2)', () => {
   it('missing package', () => {
