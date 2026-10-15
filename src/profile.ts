@@ -9,7 +9,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { JSON_SCHEMA, load } from 'js-yaml'
 import { resolveDshHome } from './home-paths.ts'
-import { githubRemoteIdentities, githubRepoIdentities, hostedRepoKey, isGitHostedSpec, repoOfTarget } from './sources.ts'
+import { githubRemoteIdentities, githubRepoIdentities, hostedRepoKey, isGenerationLink, isGitHostedSpec, repoOfTarget } from './sources.ts'
 
 /**
  * Whether a profile name follows DSH's own directory-name contract.
@@ -67,6 +67,52 @@ export function readInstalled(profile: string, explicitDir?: string): Record<str
   } catch {
     return {}
   }
+}
+
+/**
+ * Packages this profile's desktop host manages as generations (#874).
+ *
+ * DSH Desktop materialises such a plugin under
+ * `profiles/.generations/live/<name>+<version>+<hash>` and points the profile
+ * at it with a `link:` in `pnpm.overrides`, while `dependencies` keeps the
+ * plain version. Before IT runs pnpm, the host's own installer suspends that
+ * projection — the names leave `dependencies` / `overrides` for the duration
+ * of the run — and the profile's pnpm-lock.yaml therefore NEVER records them.
+ * That is by design, so a lockfile with no entry for the package is not
+ * evidence about its exact source, and reading it as if it were turned a
+ * completed rollback into "automatic rollback is unavailable" with advice the
+ * user cannot carry out (#874).
+ *
+ * Two declarations are accepted because either can stand alone: the
+ * generation link itself (in `dependencies` or in `pnpm.overrides`), and the
+ * host's own projection list (`dsh.desktop.generationProjection.plugins`).
+ */
+export function generationManagedNames(profile: string, explicitDir?: string): Set<string> {
+  const names = new Set<string>()
+  const collect = (specs: Record<string, unknown> | undefined): void => {
+    for (const [name, spec] of Object.entries(specs ?? {})) {
+      if (typeof spec === 'string' && isGenerationLink(spec)) names.add(name)
+    }
+  }
+  try {
+    const manifest = JSON.parse(readFileSync(join(profileDir(profile, explicitDir), 'package.json'), 'utf8')) as {
+      dependencies?: Record<string, unknown>
+      peerDependencies?: Record<string, unknown>
+      pnpm?: { overrides?: Record<string, unknown> }
+      dsh?: { desktop?: { generationProjection?: { plugins?: unknown } } }
+    }
+    collect(manifest.dependencies)
+    collect(manifest.peerDependencies)
+    collect(manifest.pnpm?.overrides)
+    const plugins = manifest.dsh?.desktop?.generationProjection?.plugins
+    if (Array.isArray(plugins)) {
+      for (const entry of plugins) if (typeof entry === 'string') names.add(entry)
+    }
+  } catch {
+    // No readable manifest is no generation state: callers use this only to
+    // widen what a lockfile may prove, never to narrow it.
+  }
+  return names
 }
 
 /**

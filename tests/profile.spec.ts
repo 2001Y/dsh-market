@@ -10,7 +10,7 @@ import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { resolveDshHome } from '../src/home-paths.ts'
 import {
-  addProfileBundle, bundlePatchInsertedIds, bundlesDroppedFromProfile, readProfileManifestSnapshot, bundlePatchTargets, conflictingEntryIds, declaredBundlePatchFiles, dropFromManifest, entryArtifactExists, hasDshManifest, hasLoadableEntry, holdsNativeAddon, isDshProfileName, mergeDuplicateReleaseAgeExcludes, parsePatchRows, pluginSubdirs, profileDir,
+  addProfileBundle, bundlePatchInsertedIds, bundlesDroppedFromProfile, readProfileManifestSnapshot, bundlePatchTargets, conflictingEntryIds, declaredBundlePatchFiles, dropFromManifest, entryArtifactExists, generationManagedNames, hasDshManifest, hasLoadableEntry, holdsNativeAddon, isDshProfileName, mergeDuplicateReleaseAgeExcludes, parsePatchRows, pluginSubdirs, profileDir,
   readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledRepoEvidence, readInstalledRepoIdentities, readInstalledVersion, readLockCommits,
   removeProfileBundle,
 } from '../src/profile.ts'
@@ -1883,5 +1883,53 @@ describe('bundlesDroppedFromProfile (#720)', () => {
     const dir = writeProfile(manifest(['dshmarket'], { dshmarket: '^1', 'dsh-off': '^1' }))
     bundlesDroppedFromProfile(before, 'web', undefined)
     expect(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).dsh.profile.bundles).toEqual(['dshmarket'])
+  })
+})
+
+describe('generationManagedNames (#874)', () => {
+  const link = (name: string, version: string) =>
+    `link:../.generations/live/${name}+${version}+01080f24f124/node_modules/${name}`
+
+  it('reads the host\'s own projection list', () => {
+    writeProfile({
+      dependencies: { 'dsh-codex-subscription': '2.6.5' },
+      dsh: { desktop: { generationProjection: { plugins: ['dsh-codex-subscription'] } } },
+    })
+    expect([...generationManagedNames('web')]).toEqual(['dsh-codex-subscription'])
+  })
+
+  it('reads a generation link in overrides, which is where the host writes it', () => {
+    // The shape from #874's report: `dependencies` keeps the plain version,
+    // `pnpm.overrides` carries the link into `.generations/live`.
+    writeProfile({
+      dependencies: { 'dsh-codex-subscription': '2.6.5' },
+      pnpm: { overrides: { 'dsh-codex-subscription': link('dsh-codex-subscription', '2.6.5') } },
+    })
+    expect([...generationManagedNames('web')]).toEqual(['dsh-codex-subscription'])
+  })
+
+  it('reads a generation link in dependencies', () => {
+    writeProfile({ dependencies: { 'dsh-loop': link('dsh-loop', '1.2.0') } })
+    expect([...generationManagedNames('web')]).toEqual(['dsh-loop'])
+  })
+
+  it('counts neither ordinary ranges nor a developer checkout', () => {
+    writeProfile({
+      dependencies: { 'dsh-loop': '^1.0.0', 'local-work': 'link:../local-work' },
+      peerDependencies: { 'peer-thing': link('peer-thing', '1.0.0') },
+    })
+    // The generation link inside peerDependencies IS one; the range and the
+    // hand-written `link:` are not.
+    expect([...generationManagedNames('web')]).toEqual(['peer-thing'])
+  })
+
+  it('answers with nothing on a profile with no manifest', () => {
+    mkdirSync(profileDir('web'), { recursive: true })
+    expect([...generationManagedNames('web')]).toEqual([])
+  })
+
+  it('ignores a malformed projection list instead of throwing', () => {
+    writeProfile({ dependencies: {}, dsh: { desktop: { generationProjection: { plugins: 'dsh-loop' } } } })
+    expect([...generationManagedNames('web')]).toEqual([])
   })
 })

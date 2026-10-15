@@ -4043,6 +4043,46 @@ describe('update flow — no npm publishing required', () => {
     expect(String(updated.json.compatibility.rollbackUnavailable)).toContain(' / ')
   })
 
+  it('does not read the profile lockfile as provenance for a generation-managed package (#874)', async () => {
+    // Same profile as the test above, except this package is one DSH Desktop
+    // installs as a generation: the host materialises it under
+    // `.generations/live` and suspends its `dependencies` entry while pnpm
+    // runs, so the profile lockfile never records it. The absence is the
+    // install working as designed — not evidence of a source the rollback
+    // cannot prove — and reporting it told the user to align package.json
+    // with pnpm-lock.yaml, which on that host is impossible.
+    const hostPeerDir = join(fake.profileDir, 'node_modules', '@deepseek-ai', 'dsh-settings')
+    mkdirSync(hostPeerDir, { recursive: true })
+    writeFileSync(join(hostPeerDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-settings', version: '0.1.0-rc.6' }))
+    const manifestPath = join(fake.profileDir, 'package.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.dependencies['dsh-loop'] = '1.0.0'
+    manifest.pnpm = {
+      overrides: { 'dsh-loop': 'link:../.generations/live/dsh-loop+1.0.0+01080f24f124/node_modules/dsh-loop' },
+    }
+    manifest.dsh = { ...manifest.dsh, desktop: { generationProjection: { plugins: ['dsh-loop'] } } }
+    writeFileSync(manifestPath, JSON.stringify(manifest))
+    // A real lockfile for this host: the profile's own packages, and no
+    // importer entry for the generation-managed one.
+    writeFileSync(join(fake.profileDir, 'pnpm-lock.yaml'), npmLockFixture('dshmarket', '1.66.22', '1.66.22'))
+    fake.npm['dsh-loop'].latest = '1.2.0'
+    fake.npm['dsh-loop'].versions['1.2.0'] = {
+      manifest: {
+        dsh: {}, main: 'lib/index.js',
+        peerDependencies: { '@deepseek-ai/dsh-settings': '^0.1.0-rc.7' },
+      },
+      artifacts: ['lib/index.js'],
+    }
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response(JSON.stringify({ version: '1.2.0' }), { status: 200 })))
+
+    const updated = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+
+    expect(updated.status).toBe(200)
+    expect(updated.json.compatibility).toMatchObject({ code: 'soft-incompatible' })
+    expect(updated.json.compatibility.rollbackUnavailable, String(updated.json.compatibility.rollbackUnavailable)).toBeUndefined()
+    expect(updated.json.compatibility.rollbackId).toBeTruthy()
+  })
+
   it('refuses an update rollback token after an out-of-band profile edit', async () => {
     const hostPeerDir = join(fake.profileDir, 'node_modules', '@deepseek-ai', 'dsh-settings')
     mkdirSync(hostPeerDir, { recursive: true })

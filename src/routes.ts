@@ -31,7 +31,7 @@ import {
   type PluginCommandRuntime,
 } from './dsh-cli.ts'
 import { packageOfEntryName } from './entry-identity.ts'
-import { addProfileBundle, bundlePatchInsertedIds, bundlesDroppedFromProfile, declareProfileDependency, dropFromManifest, hasLoadableEntry, holdsNativeAddon, INBOX_BUNDLES, isDshProfileName, profileDir, readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledPackageName, readInstalledRepoEvidence, readInstalledVersion, readLockCommits, readProfileBundles, readProfileManifestSnapshot, removeProfileBundle, restoreProfileManifest, setAllowBuilds, type ProfileManifestSnapshot } from './profile.ts'
+import { addProfileBundle, bundlePatchInsertedIds, bundlesDroppedFromProfile, declareProfileDependency, dropFromManifest, generationManagedNames, hasLoadableEntry, holdsNativeAddon, INBOX_BUNDLES, isDshProfileName, profileDir, readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledPackageName, readInstalledRepoEvidence, readInstalledVersion, readLockCommits, readProfileBundles, readProfileManifestSnapshot, removeProfileBundle, restoreProfileManifest, setAllowBuilds, type ProfileManifestSnapshot } from './profile.ts'
 import { assessProfile, classifyPeer, introducedDuplicateNames, introducedRisks, type CompatibilityRisk } from './compatibility.ts'
 import { runningAgentIds, type AgentsLookup } from './agents.ts'
 import { analyzeProfile, corePackageNames, type DuplicateName } from './check.ts'
@@ -4454,6 +4454,11 @@ sendJson(response, 200, { updates })
             const wasLive = verifyActivation(config.profile, name, liveNames(), activeProfileDir, disabled.has(name)).state === 'live'
               && hasHostHalf(config.profile, name, activeProfileDir)
             const beforeVersion = readInstalledVersion(config.profile, name, activeProfileDir)
+            // #874: on DSH Desktop a generation-managed plugin is materialised
+            // by the host and its `dependencies` entry is suspended while pnpm
+            // runs, so the profile lockfile never records it. Read here, before
+            // the command is sent, while the projection is still intact.
+            const generationManaged = generationManagedNames(config.profile, activeProfileDir).has(name)
             const beforePackageName = readInstalledPackageName(config.profile, name, activeProfileDir)
             // A durable manifest pin is independently authoritative. When its
             // captured lock is missing or stale, the exact OLD re-add repairs
@@ -4568,6 +4573,11 @@ sendJson(response, 200, { updates })
                             lockfileBefore: lockfileCapture.snapshot,
                           }
                         : lockfileCapture.snapshot.present
+                          // ...except for the packages the host installs as
+                          // generations: their absence from the lockfile is
+                          // how that install works, not evidence of a source
+                          // this rollback cannot prove (#874).
+                          && !generationManaged
                           && capturedNpmVersion(lockfileCapture.snapshot, name) !== beforeVersion
                           ? {
                               available: false,
