@@ -416,6 +416,33 @@ describe('readDependencyOwners (#634)', () => {
     expect(readDependencyOwners('web', [])).toEqual({})
     expect(readDependencyOwners('web', ['absent'])).toEqual({})
   })
+
+  it('finds an owner that is not a profile dependency itself (#892)', () => {
+    // `ws` is a plugin's dependency, so it is never in the profile manifest —
+    // but pnpm hoists its directory to the top level, and that is where the
+    // two native peers are declared. Asking only about the manifest's own
+    // entries could not name an owner for either, so both stayed on the
+    // installed list as plugins nobody chose.
+    writeProfile({})
+    installPackage('ws', { peerDependencies: { bufferutil: '^4.0.1', 'utf-8-validate': '>=5.0.2' } })
+    installPackage('bufferutil', {})
+    installPackage('utf-8-validate', {})
+    installPackage('dsh-better-sidebar', { dsh: {} })
+
+    const owners = readDependencyOwners('web', ['dsh-better-sidebar', 'bufferutil', 'utf-8-validate'])
+
+    expect(owners.bufferutil).toBe('ws')
+    expect(owners['utf-8-validate']).toBe('ws')
+  })
+
+  it('reads a scoped package at the top level as an owner too (#892)', () => {
+    writeProfile({})
+    installPackage('@scope/plugin', { dsh: {}, peerDependencies: { 'native-thing': '1.0.0' } })
+    installPackage('native-thing', {})
+
+    // The scope directory holds the package, not the package itself.
+    expect(readDependencyOwners('web', ['native-thing'])['native-thing']).toBe('@scope/plugin')
+  })
 })
 
 describe('readLockCommits', () => {

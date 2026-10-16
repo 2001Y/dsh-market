@@ -519,6 +519,38 @@ describe('verifyActivation (P0-2)', () => {
     expect(verifyActivation('web', 'plain-dep', new Set())).toMatchObject({ state: 'inert', bundle: false })
   })
 
+  it('names the installable plugins a collection repository carries (#892)', () => {
+    // The root of a monorepo says nothing about itself: no dsh field, no
+    // entry. Installed whole it lands on the list as "installed, not in
+    // effect" — a sentence with no way out, because the plugins exist one
+    // level down and nothing said so. The reason is the exit.
+    profile([])
+    pkg('dsh-toolkit', { name: 'dsh-toolkit', private: true })
+    pkg('dsh-toolkit/packages/dsh-at-file', { name: 'dsh-at-file', dsh: { bundle: {} } })
+    pkg('dsh-toolkit/packages/dsh-cost-dashboard', { name: 'dsh-cost-dashboard', dsh: { bundle: {} } })
+
+    const result = verifyActivation('web', 'dsh-toolkit', new Set())
+
+    expect(result).toMatchObject({ state: 'inert', bundle: false })
+    const text = result.reasons.join(' ')
+    expect(text).toContain('packages/dsh-at-file')
+    expect(text).toContain('packages/dsh-cost-dashboard')
+    expect(text).toContain('#path:')
+  })
+
+  it('does not call an ordinary dependency a collection repository (#892)', () => {
+    // A library has directories too; only one holding a dsh declaration of
+    // its own is a plugin, and the plain-dependency sentence stays the one
+    // that fits everything else.
+    profile([])
+    pkg('plain-lib', { name: 'plain-lib', main: 'index.js' })
+    pkg('plain-lib/examples/thing', { name: 'thing' })
+
+    const text = verifyActivation('web', 'plain-lib', new Set()).reasons.join(' ')
+    expect(text).toContain('plain dependency with no dsh metadata')
+    expect(text).not.toContain('#path:')
+  })
+
   it('broken when the dsh surface or the entry artifact is missing', () => {
     profile(['junk-a'])
     pkg('junk-a', { main: 'index.js' }, { 'index.js': '' })
