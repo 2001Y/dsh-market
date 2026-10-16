@@ -835,20 +835,33 @@ function ThemeCover({ plugin, onOpen, t }: {
  * Below the two-up breakpoint the CSS collapses to one column, and dealing
  * alternately would then interleave the list wrongly — so at one column the
  * items stay in a single stack in their original order.
+ *
+ * Two columns at the settings dialog's width; the sidebar page is wider and
+ * gets a third once each column still has room for a full card.
  */
-function Masonry<T>({ items, render, columns = 2 }: {
+function Masonry<T>({ items, render }: {
   items: T[]
   render: (item: T) => ReactNode
-  columns?: number
 }) {
   const wide = useMediaWide()
-  if (!wide || columns < 2) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [columns, setColumns] = useState(2)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (el === null || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry !== undefined) setColumns(Math.min(3, Math.max(2, Math.floor((entry.contentRect.width + 10) / 290))))
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [wide])
+  if (!wide) {
     return <div className={css.masonry}><div className={css.masonryCol}>{items.map(render)}</div></div>
   }
   const buckets: T[][] = Array.from({ length: columns }, () => [])
   items.forEach((item, index) => { buckets[index % columns]!.push(item) })
   return (
-    <div className={css.masonry}>
+    <div ref={ref} className={css.masonry}>
       {buckets.map((bucket, index) => (
         <div key={index} className={css.masonryCol}>{bucket.map(render)}</div>
       ))}
@@ -1142,7 +1155,7 @@ export function resetMarketPortalHost(): void {
  * "market" section id — both now draw the geometry in market-mark.ts, so the
  * nav entry and the section it opens cannot drift apart.
  */
-function MarketLogo({ size = 16, style, animated = false }: { size?: number; style?: CSSProperties; animated?: boolean }) {
+export function MarketLogo({ size = 16, style, animated = false }: { size?: number; style?: CSSProperties; animated?: boolean }) {
   return (
     <svg width={size} height={size} viewBox={`0 0 ${MARK_VIEW_BOX} ${MARK_VIEW_BOX}`} fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={style}>
       <g fill="currentColor">

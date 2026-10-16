@@ -393,6 +393,37 @@ describe('a partial write must not erase the rest of the state (#435)', () => {
     }
   })
 
+  it('keeps the sidebar entry on across unrelated writes, and lets it be turned off (#846)', () => {
+    const dir = stateDir()
+    try {
+      expect(readMarketState(dir).sidebarEntry).toBeUndefined()
+      writeMarketState(dir, { disabled: new Set(), groups: {}, groupOrder: [], sidebarEntry: true })
+      expect(readMarketState(dir).sidebarEntry).toBe(true)
+
+      // A plugin toggle knows nothing about the sidebar and must not erase it.
+      writeMarketState(dir, { disabled: new Set(['dsh-loop']), groups: {}, groupOrder: [] })
+      expect(readMarketState(dir).sidebarEntry).toBe(true)
+
+      writeMarketState(dir, { ...readMarketState(dir), sidebarEntry: false })
+      expect(readMarketState(dir).sidebarEntry).toBeUndefined()
+      expect('sidebarEntry' in readRaw(dir)).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reads anything but a literal true as the sidebar entry being off', () => {
+    const dir = stateDir()
+    try {
+      for (const sidebarEntry of ['true', 1, null, {}]) {
+        writeFileSync(join(dir, '.dsh-market', 'state.json'), JSON.stringify({ sidebarEntry }))
+        expect(readMarketState(dir).sidebarEntry).toBeUndefined()
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('ignores unsafe or malformed persisted GitHub prefixes', () => {
     const dir = stateDir()
     try {

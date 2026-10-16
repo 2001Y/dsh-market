@@ -41,6 +41,7 @@ import css from './Market.module.css'
 import { api, applyGithubRouting } from './market-data.ts'
 import type { MarketStatus } from './market-data.ts'
 import type { Translate } from './market-data.ts'
+import type { SidebarEntry } from './sidebar-entry.ts'
 
 /** Keys the market leaves in the browser; cleared when the user purges. */
 const BROWSER_KEYS = ['dshm-webdav', 'dshm-gist-id'] as const
@@ -56,6 +57,8 @@ export interface SettingsCardProps {
    * server that has disposed its routes.
    */
   onRemoved?: () => void
+  /** The opt-in sidebar row (#846); absent, the card offers no switch. */
+  sidebar?: SidebarEntry
 }
 
 type Channel = 'stable' | 'beta' | 'dev'
@@ -218,8 +221,19 @@ export function clearBrowserState(storage: Pick<Storage, 'removeItem'>): void {
   }
 }
 
-export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement | null {
+export function SettingsCard({ t, onRemoved, sidebar }: SettingsCardProps): ReactElement | null {
   const [open, setOpen] = useState(false)
+  const [sidebarState, setSidebarState] = useState(() => ({
+    supported: sidebar?.supported() === true,
+    enabled: sidebar?.enabled() === true,
+  }))
+  const [sidebarSaving, setSidebarSaving] = useState(false)
+  useEffect(() => {
+    if (sidebar === undefined) return undefined
+    const sync = (): void => { setSidebarState({ supported: sidebar.supported(), enabled: sidebar.enabled() }) }
+    sync()
+    return sidebar.subscribe(sync)
+  }, [sidebar])
   const [status, setStatus] = useState<SelfStatus | null>(null)
   const [update, setUpdate] = useState<SelfUpdate | null>(null)
   const [phase, setPhase] = useState<Phase>('idle')
@@ -445,6 +459,21 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
     }
   }, [envText, post, t])
 
+  const onSidebar = useCallback((next: boolean) => {
+    if (sidebar === undefined) return
+    setError(null)
+    setSidebarSaving(true)
+    void (async () => {
+      try {
+        await sidebar.set(next)
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      } finally {
+        setSidebarSaving(false)
+      }
+    })()
+  }, [sidebar])
+
   /** One label + hint block with an optional action, the host's row shape. */
   const row = (label: string, hint: string, action: ReactElement | null): ReactElement =>
     h('div', { className: css.setRow },
@@ -526,6 +555,19 @@ export function SettingsCard({ t, onRemoved }: SettingsCardProps): ReactElement 
               title: id === 'dev' ? t('setChannelDevHint') : undefined,
               onClick: () => { onChannel(id) },
             }, t(CHANNEL_LABEL[id]))),
+          )) : null,
+        // Only on a host with sidebar panels: elsewhere the switch would
+        // promise a row that has nowhere to appear.
+        sidebarState.supported ? row(t('setSidebar'), t('setSidebarHint'),
+          h('div', { className: css.setSeg },
+            ([false, true] as const).map(on => h('button', {
+              key: String(on),
+              type: 'button',
+              className: sidebarState.enabled === on ? `${css.setSegBtn} ${css.setSegOn}` : css.setSegBtn,
+              disabled: busy || sidebarSaving,
+              'aria-pressed': sidebarState.enabled === on,
+              onClick: () => { if (sidebarState.enabled !== on) onSidebar(on) },
+            }, t(on ? 'setSidebarOn' : 'setSidebarOff'))),
           )) : null,
         // Above the channel row and below the update row: this is about
         // getting plugins at all, which is the market's whole job, while the

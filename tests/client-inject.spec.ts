@@ -78,9 +78,10 @@ describe('dsh.client.inject', () => {
     // locale seam means the entry runs before the service exists.
     const used = servicesUsed()
     const provided = new Set(declared.map(seam => SEAM_PROVIDES[seam]))
-    // `effect` and `on` are cordis's own, not seams; `settingsScope` is
-    // injected nested precisely so its absence does not gate the entry.
-    const ownedByCordis = new Set(['effect', 'on', 'settingsScope'])
+    // `effect` and `on` are cordis's own, not seams; `settingsScope` and
+    // `layout` are injected nested precisely so their absence does not gate
+    // the entry — `layout` only steers the opt-in sidebar page (#846).
+    const ownedByCordis = new Set(['effect', 'on', 'settingsScope', 'layout'])
     const missing = [...used].filter(service => !provided.has(service) && !ownedByCordis.has(service))
     expect(missing).toEqual([])
   })
