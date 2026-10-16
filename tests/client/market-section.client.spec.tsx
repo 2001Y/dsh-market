@@ -11,7 +11,7 @@ import { resolve } from 'node:path'
 import { StrictMode } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { MarketSection, OwnerAvatar, resetMarketPortalHost, resetThemePreviewCache } from '../../src/client/MarketSection.tsx'
+import { MarketSection, OwnerAvatar, resetHostCompatibilityCache, resetMarketPortalHost, resetThemePreviewCache } from '../../src/client/MarketSection.tsx'
 import css from '../../src/client/Market.module.css'
 import { downloadStatsText } from '../../src/client/download-stats.ts'
 import { SEARCH_DELAY_MS } from '../../src/client/SearchInput.tsx'
@@ -155,6 +155,7 @@ function fakeStorage(): Storage {
 beforeEach(() => {
   vi.stubGlobal('localStorage', fakeStorage())
   stubFetch(); resetGithubRouting(); resetScreenshotsCache(); resetThemePreviewCache()
+  resetHostCompatibilityCache()
 })
 afterEach(() => {
   cleanup()
@@ -575,6 +576,57 @@ describe('MarketSection (jsdom)', () => {
     fireEvent.click(await screen.findByText(en.hostAll))
     await waitFor(() => expect(screen.getByText('dsh-loop')).toBeTruthy())
     expect(localStorage.getItem('dshm-host-filter')).toBe('all')
+  })
+
+  it('reuses host-compatibility results across remounts so the sidebar page does not rescan (#846)', async () => {
+    stubFetch({
+      '/dsh-market/discovery-compatibility': {
+        hostVersion: '0.1.2-alpha.2',
+        plugins: {
+          'dsh-loop': { status: 'incompatible', basis: 'manifest', requirement: '^0.9.0', declarations: ['^0.9.0'] },
+        },
+      },
+    })
+    const note = en.hostFilterActive.replace('{0}', '0.1.2-alpha.2').replace('{1}', '1')
+    const { unmount } = render(<MarketSection {...props()} />)
+    expect(await screen.findByText(note)).toBeTruthy()
+    const callsBeforeRemount = fetchCalls.filter(call => call.path.includes('discovery-compatibility')).length
+    expect(callsBeforeRemount).toBeGreaterThan(0)
+    unmount()
+    const marked = fetchCalls.length
+    render(<MarketSection {...props()} />)
+    expect(await screen.findByText(note)).toBeTruthy()
+    expect(screen.queryByText('dsh-loop')).toBeNull()
+    expect(
+      fetchCalls.slice(marked).filter(call => call.path.includes('discovery-compatibility')),
+      'remount must not POST discovery-compatibility again for names already scanned',
+    ).toEqual([])
+  })
+
+  it('keeps update badges painted across remounts so the sidebar entry matches settings (#846)', async () => {
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web',
+        installed: { 'dsh-loop': '^1.0.0' },
+        live: ['dsh-loop'],
+        disabled: [],
+        notes: {},
+      },
+      '/dsh-market/updates': {
+        updates: {
+          'dsh-loop': {
+            kind: 'npm', version: '1.0.0', current: '1.0.0', latest: '1.2.0', updateAvailable: true,
+          },
+        },
+      },
+    })
+    const { unmount } = render(<MarketSection {...props()} />)
+    expect(await screen.findByRole('button', { name: /Update all \(1\)/ })).toBeTruthy()
+    unmount()
+    // No network yet — the button must still come from the shared cache, not
+    // wait on /dsh-market/updates the way an empty remount used to.
+    render(<MarketSection {...props()} />)
+    expect(screen.getByRole('button', { name: /Update all \(1\)/ })).toBeTruthy()
   })
 
   it('opens Discover with the host-provided plugin query', async () => {
@@ -6851,6 +6903,69 @@ describe('category row expansion', () => {
     const chipLabels = [...container.querySelectorAll('[data-chip="1"]')].map(el => el.textContent?.trim())
     for (const label of ['UI', 'Usage', 'Theme', 'Model', 'Session', 'Memory', 'Tools', 'Browser', 'Vision', 'Voice']) {
       expect(chipLabels, `${label} missing from: ${chipLabels.join(', ')}`).toContain(label)
+    }
+  })
+
+  it('remeasures the collapsed budget when the category wrap grows wider (#846 sidebar)', async () => {
+    // The sidebar page is often much wider than the settings dialog. Without
+    // a resize pass, a budget measured at the first (narrow or zero) width
+    // leaves a half-empty category row on the wide panel.
+    let chipsPerRow = 4
+    let wrapWidth = 400
+    const offsetTopDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop')
+    const offsetHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+    const clientWidthDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
+    Object.defineProperty(HTMLElement.prototype, 'offsetTop', {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.dataset.chip !== '1') return 0
+        const siblings = [...(this.parentElement?.children ?? [])]
+          .filter((el): el is HTMLElement => (el as HTMLElement).dataset?.chip === '1')
+        return Math.floor(siblings.indexOf(this) / chipsPerRow) * 32
+      },
+    })
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) { return this.className.includes('catsWrap') ? 90 : 26 },
+    })
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get(this: HTMLElement) { return this.className.includes('catsWrap') ? wrapWidth : 300 },
+    })
+    let resizeCats: (width: number) => void = () => { throw new Error('cats wrap is not observed') }
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) {
+        if (!(target instanceof HTMLElement) || !target.className.includes('catsWrap')) return
+        resizeCats = width => {
+          wrapWidth = width
+          chipsPerRow = width >= 800 ? 8 : 4
+          this.callback([
+            { target, contentRect: { width } } as ResizeObserverEntry,
+          ], this as unknown as ResizeObserver)
+        }
+      }
+      unobserve() {}
+      disconnect() {}
+    })
+    try {
+      stubFetch({ '/dsh-market/registry': { source: 'snapshot', registry: { ...REGISTRY, categories: CATS } } })
+      const { container } = render(<MarketSection {...props()} />)
+      await screen.findByText('dsh-loop')
+      const chipCount = () => container.querySelectorAll('[data-chip="1"]').length
+      // 4/row × 2 rows → 8 fit → budget 7 → show 6 categories + 「全部」.
+      await waitFor(() => expect(chipCount()).toBe(7))
+      act(() => resizeCats(900))
+      // 8/row × 2 rows fits every chip; collapsed shows the full set.
+      await waitFor(() => expect(chipCount()).toBe(11))
+    } finally {
+      if (offsetTopDesc) Object.defineProperty(HTMLElement.prototype, 'offsetTop', offsetTopDesc)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'offsetTop')
+      if (offsetHeightDesc) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeightDesc)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'offsetHeight')
+      if (clientWidthDesc) Object.defineProperty(HTMLElement.prototype, 'clientWidth', clientWidthDesc)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'clientWidth')
+      vi.unstubAllGlobals()
     }
   })
 

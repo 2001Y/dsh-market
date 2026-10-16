@@ -306,12 +306,18 @@
 @container (max-width:460px){
   .themeGallery{grid-template-columns:minmax(0,1fr)}
 }
+/* Keep the control one line tall even when the row is short — a flex child
+   with shrink left on will squeeze until the host Button stacks its icon
+   above the label. */
+.exportLogBtn{flex-shrink:0;white-space:nowrap}
 @container (max-width:420px){
   .sub{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:start;gap:2px 8px}
   .sub > span:first-child{grid-column:1;grid-row:1}
   .sub > .grow{display:none}
   .submitLink{grid-column:1;grid-row:2}
-  .exportLogBtn{grid-column:2;grid-row:1 / span 2;flex-shrink:0}
+  /* span the two text rows for alignment, but do not stretch — stretch was
+     what made the outline Button grow into a tall icon-over-label stack. */
+  .exportLogBtn{grid-column:2;grid-row:1 / span 2;align-self:center}
   .themeToolbar{grid-template-columns:minmax(0,1fr)}
   .themeCardHead{flex-wrap:wrap}
   .themeStatus,.themeStatusMuted{order:3}
@@ -328,11 +334,22 @@
   [role="dialog"]:has([data-dsh-market-root]) > nav{display:none}
   [role="dialog"]:has([data-dsh-market-root]) > div{width:100%;min-width:0;flex:1 1 100%}
 }
-/* The sidebar page (#846): centred in the main column at the host Plugins
-   page's 960px cap and top padding, so the two neighbouring pages line up.
-   Narrower windows shrink it down to the dialog-width layouts. */
-.panelHost{box-sizing:border-box;height:100%;display:flex;justify-content:center;padding:calc(28px + var(--dsh-frame-top-clearance,0px)) clamp(16px,4vw,48px) 0}
-.panelHost > *{flex:0 1 960px;min-width:0}
+/* The sidebar page (#846): the market fills the main column so its own
+   scroller (.body) puts the scrollbar on the panel edge — a 960px-wide
+   root left the bar floating in the middle of a wide window. Content
+   stays at the host Plugins page's 960px cap via side padding on .head
+   and .body; the same max() keeps a 16–48px gutter when the panel is
+   narrower than 960. Top padding clears the window chrome the way the
+   Plugins page does. Settings dialog is untouched: it never mounts this
+   host.
+   Containment moves from .root to .body so @container rules still see
+   the ~960px content box, not the full panel width. */
+.panelHost{box-sizing:border-box;height:100%;display:flex;flex-direction:column;min-height:0;padding:calc(28px + var(--dsh-frame-top-clearance,0px)) 0 0}
+.panelHost > .root{flex:1;min-height:0;width:100%;min-width:0;container-type:normal}
+/* Head sits outside .body; give it its own containment so the narrow
+   .sub / exportLogBtn rules still fire at the same visual width. */
+.panelHost .head{container-type:inline-size;padding-left:max(clamp(16px,4vw,48px),calc((100% - 960px) / 2));padding-right:max(clamp(16px,4vw,48px),calc((100% - 960px) / 2))}
+.panelHost .body{container-type:inline-size;padding-left:max(clamp(16px,4vw,48px),calc((100% - 960px) / 2));padding-right:max(clamp(16px,4vw,48px),calc((100% - 960px) / 2))}
 /* Explicit immersive mode: the normal Settings width remains the default,
    while the user can opt into a Wallpaper-style multi-column gallery. */
 [role="dialog"]:has([data-dsh-market-fullscreen="true"]){position:fixed;inset:0;width:100vw;height:100vh;max-width:none;max-height:none;border-radius:0}
@@ -838,8 +855,13 @@
 .sect{margin:14px 2px 8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#6b7280)}
 .sectAction{margin:14px 2px 8px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#6b7280);display:flex;align-items:center;gap:8px}
 
-/* #61: profile backup & restore */
-.backupGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+/* #61: profile backup & restore.
+   One column always. These are forms (URL / token / password), not browse
+   cards: two-up on the sidebar page's 960px column left a half-empty
+   「本地文件」 beside a tall WebDAV card, and three-up crushed the inputs.
+   Full width matches how the block is filled in, in both the settings
+   dialog and the sidebar page. */
+.backupGrid{display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
 .backupCard{background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l2,#e5e7eb);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:10px}
 .backupCard h3{font-size:14px;margin:0}
 .backupCard p{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#6b7280);margin:0}
@@ -857,6 +879,10 @@
    itself (overflow-y:auto), so the outer dialog never overflows and its own
    overflow-y:auto stays silent (no outer scrollbar). */
 .diagPage{display:flex;flex-direction:column;gap:12px;height:100%;min-height:0;overflow-y:auto}
+/* Sidebar page (#846): let .body own the scroll so the bar sits on the
+   panel edge. Nested height:100% + overflow here parked the bar on the
+   960px content column and left a gutter to the window edge. */
+.panelHost .diagPage{height:auto;overflow:visible}
 .diagSummary{display:flex;flex-wrap:wrap;align-items:center;gap:12px;background:var(--dsw-alias-bg-layer-1,#fff);border:1px solid var(--dsw-alias-border-l2,#e5e7eb);border-radius:12px;padding:10px 14px;font-size:12px}
 .diagSummaryItem{display:inline-flex;align-items:center;gap:6px;color:var(--dsw-alias-label-secondary,#6b7280);white-space:nowrap}
 .diagSummaryMeta{color:var(--dsw-alias-label-tertiary,#9ca3af);font-family:var(--ds-font-family-code,ui-monospace,Menlo,Consolas,monospace);font-size:11px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -904,7 +930,11 @@
 /* #98 phase 3: collapsible snapshots & rollback panel */
 .collapseHead{display:flex;align-items:center;gap:8px;border:none;background:none;font:inherit;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#1f2328);padding:0;cursor:pointer;text-align:left;width:100%}
 .collapseIcon{display:inline-flex;flex-shrink:0;color:var(--dsw-alias-label-secondary,#6b7280)}
-.collapseTitle{flex:1;min-width:0}
+/* Title sizes to its text so `.diagCount` sits as 「错误 (0)」, not halfway
+   across the row. `flex:1` here used to share free space with a trailing
+   `.grow` and parked the count in a dead middle column on wide panels. */
+.collapseTitle{flex:0 1 auto;min-width:0}
+.collapseHead .diagCount{flex-shrink:0}
 .collapseBody{display:flex;flex-direction:column;gap:10px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2,#f0f1f3);margin-top:8px;min-width:0;overflow-wrap:anywhere}
 .orderPanel{display:flex;flex-direction:column;gap:10px;min-width:0}
 .panelNote{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#6b7280);margin:0}
