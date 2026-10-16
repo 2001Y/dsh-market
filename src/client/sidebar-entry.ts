@@ -36,6 +36,13 @@ export interface SidebarEntry {
   /** The user's choice as last confirmed by the server. */
   enabled(): boolean
   /**
+   * The initial `load()` finished (ok, refused, or failed). Until then
+   * `enabled()` is still the default off, and must not be treated as a
+   * confirmed choice — the settings tip would otherwise flash for users
+   * who already turned the row on.
+   */
+  ready(): boolean
+  /**
    * Persist the choice, then show or hide the row.
    * @returns the value the server accepted.
    */
@@ -56,6 +63,7 @@ interface Deps {
 export function createSidebarEntry({ gate, fetch }: Deps): SidebarEntry {
   let supported = false
   let enabled = false
+  let ready = false
   /** Bumped by every `set` so a slow initial `load` cannot overwrite it. */
   let epoch = 0
   const listeners = new Set<() => void>()
@@ -67,9 +75,16 @@ export function createSidebarEntry({ gate, fetch }: Deps): SidebarEntry {
     notify()
   }
 
+  const settle = (): void => {
+    if (ready) return
+    ready = true
+    notify()
+  }
+
   return {
     supported: () => supported,
     enabled: () => enabled,
+    ready: () => ready,
     subscribe: (listener) => {
       listeners.add(listener)
       return () => { listeners.delete(listener) }
@@ -83,14 +98,16 @@ export function createSidebarEntry({ gate, fetch }: Deps): SidebarEntry {
       const at = epoch
       try {
         const response = await fetch(api('/dsh-market/sidebar-entry'), { cache: 'no-store' })
-        if (!response.ok) return
-        const body = (await response.json()) as { enabled?: unknown }
-        // A POST that finished while we were in flight already owns the row.
-        if (at !== epoch) return
-        accept(body.enabled === true)
+        if (response.ok) {
+          const body = (await response.json()) as { enabled?: unknown }
+          // A POST that finished while we were in flight already owns the row.
+          if (at === epoch) accept(body.enabled === true)
+        }
       } catch {
         // No answer means no row: the default is off, and the settings
         // entry is still there.
+      } finally {
+        settle()
       }
     },
     set: async (next) => {
@@ -111,6 +128,8 @@ export function createSidebarEntry({ gate, fetch }: Deps): SidebarEntry {
       }
       // A newer set() started after we did — let that one paint.
       if (at === epoch) accept(body.enabled)
+      // A choice the user just made is as settled as a finished load.
+      settle()
       return body.enabled
     },
   }

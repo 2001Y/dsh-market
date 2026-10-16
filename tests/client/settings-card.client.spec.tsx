@@ -388,6 +388,7 @@ describe('SettingsCard — sidebar shortcut (#846)', () => {
       sets,
       supported: () => supported,
       enabled: () => enabled,
+      ready: () => true,
       subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
       markSupported: () => {},
       load: async () => {},
@@ -419,6 +420,9 @@ describe('SettingsCard — sidebar shortcut (#846)', () => {
     act(() => { sidebar.support() })
     await waitFor(() => { expect(screen.getByText(t('setSidebar'))).toBeTruthy() })
     expect(screen.getByRole('button', { name: t('setSidebarOff') }).getAttribute('aria-pressed')).toBe('true')
+    const sidebarLabel = screen.getByText(t('setSidebar'))
+    const regionLabel = screen.getByText(t('setRegion'))
+    expect(sidebarLabel.compareDocumentPosition(regionLabel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('turns the row on, and says the settings entry stays', async () => {

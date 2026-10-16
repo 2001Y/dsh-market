@@ -8204,3 +8204,77 @@ describe('empty filter recovery', () => {
     expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull()
   })
 })
+
+describe('sidebar shortcut tip (#846)', () => {
+  function fakeSidebar(options: { supported?: boolean; enabled?: boolean; ready?: boolean } = {}): {
+    supported(): boolean
+    enabled(): boolean
+    ready(): boolean
+    set(next: boolean): Promise<boolean>
+    subscribe(listener: () => void): () => void
+    settle(): void
+    sets: boolean[]
+  } {
+    let enabled = options.enabled === true
+    let ready = options.ready !== false
+    const listeners = new Set<() => void>()
+    const sets: boolean[] = []
+    const notify = (): void => { for (const listener of listeners) listener() }
+    return {
+      sets,
+      supported: () => options.supported !== false,
+      enabled: () => enabled,
+      ready: () => ready,
+      subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+      settle: () => { ready = true; notify() },
+      set: async (next) => {
+        sets.push(next)
+        enabled = next
+        ready = true
+        notify()
+        return next
+      },
+    }
+  }
+
+  it('offers the shortcut on the settings page when the sidebar is off', async () => {
+    const sidebar = fakeSidebar()
+    render(<MarketSection {...props()} sidebar={sidebar} surface="settings" />)
+    expect(await screen.findByText(en.sidebarTip)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: en.setSidebarOn }))
+    await waitFor(() => { expect(sidebar.sets).toEqual([true]) })
+    expect(screen.queryByText(en.sidebarTip)).toBeNull()
+  })
+
+  it('waits until the saved choice is known before offering the tip', async () => {
+    const sidebar = fakeSidebar({ ready: false })
+    render(<MarketSection {...props()} sidebar={sidebar} surface="settings" />)
+    await screen.findByText(en.nav)
+    expect(screen.queryByText(en.sidebarTip)).toBeNull()
+    act(() => { sidebar.settle() })
+    expect(await screen.findByText(en.sidebarTip)).toBeTruthy()
+  })
+
+  it('stays quiet on the sidebar page and when the shortcut is already on', async () => {
+    const off = fakeSidebar()
+    const { rerender } = render(<MarketSection {...props()} sidebar={off} surface="sidebar" />)
+    await screen.findByText(en.nav)
+    expect(screen.queryByText(en.sidebarTip)).toBeNull()
+
+    rerender(<MarketSection {...props()} sidebar={fakeSidebar({ enabled: true })} surface="settings" />)
+    expect(screen.queryByText(en.sidebarTip)).toBeNull()
+  })
+
+  it('does not return after the user dismissed it', () => {
+    localStorage.setItem('dshm-sidebar-tip-dismissed', '1')
+    render(<MarketSection {...props()} sidebar={fakeSidebar()} surface="settings" />)
+    expect(screen.queryByText(en.sidebarTip)).toBeNull()
+  })
+
+  it('hides the tip for good when the user dismisses it', async () => {
+    render(<MarketSection {...props()} sidebar={fakeSidebar()} surface="settings" />)
+    fireEvent.click(await screen.findByRole('button', { name: en.sidebarTipDismiss }))
+    expect(localStorage.getItem('dshm-sidebar-tip-dismissed')).toBe('1')
+    expect(screen.queryByText(en.sidebarTip)).toBeNull()
+  })
+})

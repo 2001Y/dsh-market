@@ -19,6 +19,7 @@ import { exportMarketLog } from './self-check.ts'
 import { SettingsCard } from './SettingsCard.tsx'
 import { installSettingsNavIcon } from './settings-nav-icon.ts'
 import { createSidebarEntry, SIDEBAR_PANEL_ID, SIDEBAR_PANEL_ORDER } from './sidebar-entry.ts'
+import type { SidebarEntry } from './sidebar-entry.ts'
 import { MarketLogo } from './MarketSection.tsx'
 import css from './Market.module.css'
 import type { ThemeSnapshot, Translate } from './market-data.ts'
@@ -167,13 +168,17 @@ function mountMarket(ctx: MarketClientContext): void {
   // it (#602: a shell that renders the market itself does not want a
   // duplicate nav item) and whether this package is being removed. See
   // section-gate.ts for why the orderings, not the booleans, are the work.
+  // Assigned once the sidebar controller exists, below. Closures that call
+  // buildMarketElement run after that assignment — a render during setup
+  // would see no controller, and the page simply offers no tip.
+  let sidebar: SidebarEntry | undefined
   /**
    * The market's own panel, as an element — one builder for the settings
    * section this package registers and for `market.render()` (#602). Built
    * per call: the props are live (locale, theme, the host's preferred
    * subsection), and a cached element would freeze the first caller's.
    */
-  const buildMarketElement = (ownerProps: { preferredSubsectionId?: string } = {}): unknown => marketElement({
+  const buildMarketElement = (ownerProps: { preferredSubsectionId?: string; surface?: 'settings' | 'sidebar' } = {}): unknown => marketElement({
     t,
     locale: ctx.locale,
     theme: ctx.theme,
@@ -189,6 +194,8 @@ function mountMarket(ctx: MarketClientContext): void {
     },
     exportLog: () => { void exportMarketLog().catch(() => {}) },
     preferredSubsectionId: ownerProps.preferredSubsectionId,
+    sidebar,
+    surface: ownerProps.surface ?? 'settings',
   })
 
   const sectionGate = createSectionGate(() => {
@@ -199,7 +206,7 @@ function mountMarket(ctx: MarketClientContext): void {
       label: () => t('nav'),
       locale: NS,
       inject: () => ({ t }),
-    }, (ownerProps: { preferredSubsectionId?: string } = {}) => buildMarketElement(ownerProps))
+    }, (ownerProps: { preferredSubsectionId?: string } = {}) => buildMarketElement({ ...ownerProps, surface: 'settings' }))
     // `slots.register` may not hand back a disposer on every host; the gate
     // needs one regardless, so the absence becomes a no-op rather than a
     // silently unretractable entry.
@@ -217,7 +224,7 @@ function mountMarket(ctx: MarketClientContext): void {
       key: SIDEBAR_PANEL_ID,
       locale: NS,
       inject: () => ({ t }),
-    }, () => h('div', { className: css.panelHost }, buildMarketElement() as ReactNode))
+    }, () => h('div', { className: css.panelHost }, buildMarketElement({ surface: 'sidebar' }) as ReactNode))
     const offRow = ctx.slots.register({
       name: 'sidebar.panellist',
       id: SIDEBAR_PANEL_ID,
@@ -233,7 +240,7 @@ function mountMarket(ctx: MarketClientContext): void {
       if (typeof offPanel === 'function') (offPanel as () => void)()
     }
   }, false)
-  const sidebar = createSidebarEntry({ gate: sidebarGate, fetch: (...args) => fetch(...args) })
+  sidebar = createSidebarEntry({ gate: sidebarGate, fetch: (...args) => fetch(...args) })
   void sidebar.load()
   ctx.slots.inject('sidebar.panellist', () => { sidebar.markSupported() })
   ;(ctx as unknown as { inject(services: string[], callback: (scoped: { layout: LayoutService }) => void): void })

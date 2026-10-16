@@ -490,6 +490,21 @@ export function SettingsCard({ t, onRemoved, sidebar }: SettingsCardProps): Reac
   const body = phase === 'removed'
     ? row(t('setSelfRemoved'), t('setSelfRemovedHint'), null)
     : h(Fragment, null,
+        // First, not under region and proxy: this is how the shortcut stays
+        // findable after the market-page tip is dismissed. Only on a host
+        // with sidebar panels — elsewhere the switch would promise a row
+        // that has nowhere to appear.
+        sidebarState.supported ? row(t('setSidebar'), t('setSidebarHint'),
+          h('div', { className: css.setSeg },
+            ([false, true] as const).map(on => h('button', {
+              key: String(on),
+              type: 'button',
+              className: sidebarState.enabled === on ? `${css.setSegBtn} ${css.setSegOn}` : css.setSegBtn,
+              disabled: busy || sidebarSaving,
+              'aria-pressed': sidebarState.enabled === on,
+              onClick: () => { if (sidebarState.enabled !== on) onSidebar(on) },
+            }, t(on ? 'setSidebarOn' : 'setSidebarOff'))),
+          )) : null,
         status?.selfManaged === true ? row(
           // An older offer is not an update, and calling it one would have
           // the user click "更新" to go backwards. It IS what picking an
@@ -556,22 +571,8 @@ export function SettingsCard({ t, onRemoved, sidebar }: SettingsCardProps): Reac
               onClick: () => { onChannel(id) },
             }, t(CHANNEL_LABEL[id]))),
           )) : null,
-        // Only on a host with sidebar panels: elsewhere the switch would
-        // promise a row that has nowhere to appear.
-        sidebarState.supported ? row(t('setSidebar'), t('setSidebarHint'),
-          h('div', { className: css.setSeg },
-            ([false, true] as const).map(on => h('button', {
-              key: String(on),
-              type: 'button',
-              className: sidebarState.enabled === on ? `${css.setSegBtn} ${css.setSegOn}` : css.setSegBtn,
-              disabled: busy || sidebarSaving,
-              'aria-pressed': sidebarState.enabled === on,
-              onClick: () => { if (sidebarState.enabled !== on) onSidebar(on) },
-            }, t(on ? 'setSidebarOn' : 'setSidebarOff'))),
-          )) : null,
-        // Above the channel row and below the update row: this is about
-        // getting plugins at all, which is the market's whole job, while the
-        // channel is about which build of the market itself arrives.
+        // Getting plugins at all is the market's job; the channel above is
+        // which build of the market itself arrives.
         row(
           t('setRegion'),
           // The hint carries the explanation of an automatic choice when

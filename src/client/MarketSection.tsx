@@ -50,6 +50,7 @@ import { clearSettled, drop, enqueue, patch as patchRecord, recordForUrl } from 
 import type { OperationRecord } from './operations.ts'
 import { Diagnostics } from './Diagnostics.tsx'
 import { exportMarketLog } from './self-check.ts'
+import type { SidebarEntry } from './sidebar-entry.ts'
 import {
   installCommandFor,
   api, applyGithubRouting, avatarColor, catalogEntryForInstalled, entryForDep, failureText, githubRouteCandidates, groupSwitchState, installedForCatalog, isGenerationSpec, isInstalled, localizeBilingual, localizeBilingualList, looksTerminal, matchInstalledName, orderedCategories, pluginCategories,
@@ -1793,6 +1794,13 @@ export interface MarketSectionProps {
   }
   /** Optional host-provided destination: `discover:<query>` or `installed:<query>`. */
   preferredSubsectionId?: string
+  /** The opt-in sidebar row. Absent, the page offers no shortcut tip. */
+  sidebar?: SidebarEntry
+  /**
+   * Which mount this is. The settings page may offer the sidebar shortcut;
+   * the sidebar page must not ask to open itself.
+   */
+  surface?: 'settings' | 'sidebar'
 }
 
 interface SourceMigrationConfirm {
@@ -1829,6 +1837,15 @@ function readHostFilterPreference(): boolean {
   try { return localStorage.getItem(HOST_FILTER_KEY) !== 'all' } catch { return true }
 }
 
+/** "不再提示" on the settings-page sidebar tip. A missing store means show it. */
+const SIDEBAR_TIP_KEY = 'dshm-sidebar-tip-dismissed'
+function readSidebarTipDismissed(): boolean {
+  try { return localStorage.getItem(SIDEBAR_TIP_KEY) === '1' } catch { return false }
+}
+function writeSidebarTipDismissed(): void {
+  try { localStorage.setItem(SIDEBAR_TIP_KEY, '1') } catch { /* private mode: the tip can return */ }
+}
+
 export function MarketSection(props: MarketSectionProps) {
   const t = props.t
   const initialWebdav = useMemo(savedWebdav, [])
@@ -1837,6 +1854,41 @@ export function MarketSection(props: MarketSectionProps) {
     () => props.locale.getSnapshot(),
   )
   const lang = String(localeSnap.active).toLowerCase().startsWith('zh') ? 'zh' : 'en'
+  const sidebar = props.sidebar
+  const [sidebarSnap, setSidebarSnap] = useState(() => ({
+    supported: sidebar?.supported() === true,
+    enabled: sidebar?.enabled() === true,
+    ready: sidebar?.ready() === true,
+  }))
+  const [sidebarTipDismissed, setSidebarTipDismissed] = useState(readSidebarTipDismissed)
+  const [sidebarTipSaving, setSidebarTipSaving] = useState(false)
+  const [sidebarTipError, setSidebarTipError] = useState<string | null>(null)
+  useEffect(() => {
+    if (sidebar === undefined) return undefined
+    const sync = (): void => {
+      setSidebarSnap({
+        supported: sidebar.supported(),
+        enabled: sidebar.enabled(),
+        ready: sidebar.ready(),
+      })
+    }
+    sync()
+    return sidebar.subscribe(sync)
+  }, [sidebar])
+  // Wait for load(): until then enabled is the default off, not a known choice.
+  const showSidebarTip = (props.surface ?? 'settings') === 'settings'
+    && sidebarSnap.ready
+    && sidebarSnap.supported
+    && !sidebarSnap.enabled
+    && !sidebarTipDismissed
+  const enableSidebar = useCallback(() => {
+    if (sidebar === undefined) return
+    setSidebarTipError(null)
+    setSidebarTipSaving(true)
+    void sidebar.set(true).catch((cause: unknown) => {
+      setSidebarTipError(cause instanceof Error ? cause.message : String(cause))
+    }).finally(() => { setSidebarTipSaving(false) })
+  }, [sidebar])
   // null when the composition has no theme service — the Themes tab hides.
   const themeSnap = useSyncExternalStore(
     props.themeStore.subscribe,
@@ -5850,6 +5902,27 @@ export function MarketSection(props: MarketSectionProps) {
           )}
           </div>
         </div>
+        {showSidebarTip && (
+          <div className={css.sidebarTip}>
+            <span>{t('sidebarTip')}</span>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={sidebarTipSaving}
+              onClick={enableSidebar}
+            >{t('setSidebarOn')}</Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={sidebarTipSaving}
+              onClick={() => {
+                writeSidebarTipDismissed()
+                setSidebarTipDismissed(true)
+              }}
+            >{t('sidebarTipDismiss')}</Button>
+            {sidebarTipError !== null && <span>{sidebarTipError}</span>}
+          </div>
+        )}
         <div className={css.sub}>
           <span>{t('subtitle')}</span>
           <a className={css.submitLink} href="https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md" target="_blank" rel="noreferrer">{t('submitPlugin')}</a>

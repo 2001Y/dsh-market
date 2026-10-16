@@ -93,6 +93,34 @@ describe('createSidebarEntry', () => {
     expect(entry.supported()).toBe(true)
   })
 
+  it('is not ready until load settles, success or failure', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const fetch = vi.fn(async () => {
+      await gate
+      return new Response(JSON.stringify({ enabled: true }), { status: 200 })
+    }) as unknown as typeof globalThis.fetch
+    const entry = createSidebarEntry({
+      gate: createSectionGate(() => () => {}, false),
+      fetch,
+    })
+    expect(entry.ready()).toBe(false)
+    const loading = entry.load()
+    expect(entry.ready()).toBe(false)
+    release()
+    await loading
+    expect(entry.ready()).toBe(true)
+    expect(entry.enabled()).toBe(true)
+
+    const failed = createSidebarEntry({
+      gate: createSectionGate(() => () => {}, false),
+      fetch: vi.fn(async () => new Response('no', { status: 500 })) as unknown as typeof globalThis.fetch,
+    })
+    await failed.load()
+    expect(failed.ready()).toBe(true)
+    expect(failed.enabled()).toBe(false)
+  })
+
   it('does not let a slow load overwrite a choice the user just saved', async () => {
     let releaseLoad!: () => void
     const loadGate = new Promise<void>(resolve => { releaseLoad = resolve })
