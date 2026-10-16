@@ -27,16 +27,18 @@ const HAS_DSH = dshAvailable()
  */
 async function pinHostFilterOff(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    try { localStorage.setItem('dshm-host-filter', 'all') } catch { /* private mode */ }
+    // The test tsconfig has no DOM lib; the page does.
+    const store = (globalThis as any).localStorage
+    try { store.setItem('dshm-host-filter', 'all') } catch { /* private mode */ }
   })
 }
 
 /** If a prior run left the filter on, wait until the note stops saying "checking". */
 async function waitHostFilterQuiet(page: Page): Promise<void> {
   await page.waitForFunction(() => {
-    const note = document.querySelector('[class*="hostFilterNote"]')
+    const note = (globalThis as any).document.querySelector('[class*="hostFilterNote"]')
     if (note === null) return true
-    const text = note.textContent ?? ''
+    const text = String(note.textContent ?? '')
     return !/正在检查宿主要求|Checking host requirements/.test(text)
   }, undefined, { timeout: 120_000 })
 }
