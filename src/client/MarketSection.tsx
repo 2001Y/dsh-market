@@ -1537,7 +1537,10 @@ let cachedRepoIdentities: InstalledRepoIdentities | null = null
 let cachedRepoHints: InstalledRepoHints | null = null
 let cachedHostCompatibility: HostCompatibilityMap = {}
 let cachedHostVersion: string | null | undefined = undefined
-const requestedHostCompatibilityNames = new Set<string>()
+/** Names with an in-flight discovery-compatibility request (module-wide). */
+const hostCompatibilityInFlight = new Set<string>()
+/** Subscribers for useSyncExternalStore — every mounted MarketSection. */
+const hostCompatibilityListeners = new Set<() => void>()
 let cachedUpdates: Record<string, UpdateStatus> = {}
 /** False until /dsh-market/updates has answered at least once this process. */
 let cachedUpdatesReady = false
@@ -1549,6 +1552,8 @@ let cachedFavoriteUrls: string[] = []
 let cachedBlockedNames: string[] = []
 let cachedInstalledBundles: string[] = []
 let cachedActivations: Record<string, ActivationInfo> = {}
+/** Market package version from /status — the 「v1.66.x」 next to the title. */
+let cachedMarketVersion: string | null = null
 
 /** Keep a React state setter and its module cache in lockstep. */
 function cacheState<T>(write: (value: T) => void, setState: (value: T | ((current: T) => T)) => void) {
@@ -1565,7 +1570,7 @@ function cacheState<T>(write: (value: T) => void, setState: (value: T | ((curren
 export function resetHostCompatibilityCache(): void {
   cachedHostCompatibility = {}
   cachedHostVersion = undefined
-  requestedHostCompatibilityNames.clear()
+  hostCompatibilityInFlight.clear()
   cachedUpdates = {}
   cachedUpdatesReady = false
   cachedInstalledReady = false
@@ -1576,6 +1581,33 @@ export function resetHostCompatibilityCache(): void {
   cachedBlockedNames = []
   cachedInstalledBundles = []
   cachedActivations = {}
+  cachedMarketVersion = null
+}
+
+/** Any cached answer counts — including unavailable. Re-querying every
+ * remount used to re-POST thousands of names; a host-version change (below)
+ * is what drops the map for a fresh scan. */
+function hostCompatibilitySettled(name: string): boolean {
+  return cachedHostCompatibility[name] !== undefined
+}
+
+function clearHostCompatibilityCache(): void {
+  cachedHostCompatibility = {}
+  hostCompatibilityInFlight.clear()
+  for (const listener of hostCompatibilityListeners) listener()
+}
+
+function subscribeHostCompatibility(onStoreChange: () => void): () => void {
+  hostCompatibilityListeners.add(onStoreChange)
+  return () => { hostCompatibilityListeners.delete(onStoreChange) }
+}
+
+/** Merge into the module cache and notify every mounted MarketSection — a
+ * sidebar/settings switch used to drop in-flight setStates and leave the
+ * note frozen at 「正在检查 665/2455」. */
+function commitHostCompatibility(accepted: HostCompatibilityMap): void {
+  cachedHostCompatibility = { ...cachedHostCompatibility, ...accepted }
+  for (const listener of hostCompatibilityListeners) listener()
 }
 
 /** Discover grid page-size choices — the catalog grows daily, so cap each page. */
@@ -2275,7 +2307,8 @@ export function MarketSection(props: MarketSectionProps) {
    * arrive as a photo of the screen, and without a version in frame the
    * first reply always has to ask which one it was.
    */
-  const [version, setVersion] = useState<string | null>(null)
+  const [version, setVersionState] = useState<string | null>(() => cachedMarketVersion)
+  const setVersion = useCallback(cacheState(value => { cachedMarketVersion = value }, setVersionState), [])
   /**
    * The catalog's own build date (#712). The version on a card is the
    * catalog's copy, not a live npm lookup, so a plugin published after the
@@ -2405,6 +2438,11 @@ export function MarketSection(props: MarketSectionProps) {
   /** Undefined while the first catalog response is pending; null means the host cannot be located. */
   const [hostVersion, setHostVersionState] = useState<string | null | undefined>(() => cachedHostVersion)
   const setHostVersion = useCallback((value: string | null | undefined) => {
+    // Same process, different DSH — peer ranges were judged against the old
+    // host and must not keep filtering the list.
+    if (typeof cachedHostVersion === 'string' && typeof value === 'string' && value !== cachedHostVersion) {
+      clearHostCompatibilityCache()
+    }
     cachedHostVersion = value
     setHostVersionState(value)
   }, [])
@@ -2423,14 +2461,11 @@ export function MarketSection(props: MarketSectionProps) {
   /** The profile this page is running in, for the manual command's own
    * `--profile` token (#872). The catalog's is always `web`. */
   const [profileName, setProfileName] = useState<string | null>(null)
-  const [hostCompatibility, setHostCompatibilityState] = useState<HostCompatibilityMap>(() => cachedHostCompatibility)
-  const setHostCompatibility = useCallback((value: HostCompatibilityMap | ((current: HostCompatibilityMap) => HostCompatibilityMap)) => {
-    setHostCompatibilityState(current => {
-      const next = typeof value === 'function' ? value(current) : value
-      cachedHostCompatibility = next
-      return next
-    })
-  }, [])
+  const hostCompatibility = useSyncExternalStore(
+    subscribeHostCompatibility,
+    () => cachedHostCompatibility,
+    () => cachedHostCompatibility,
+  )
   const [hostCompatibilityPending, setHostCompatibilityPending] = useState(0)
   const [catsOpen, setCatsOpen] = useState(false)
   /** Themes tab: independent from Discover's sort/time state above — a
@@ -2613,8 +2648,8 @@ export function MarketSection(props: MarketSectionProps) {
 
   const loadHostCompatibility = useCallback(async (names: readonly string[]): Promise<void> => {
     const unique = [...new Set(names)].filter(name => {
-      if (name === '' || requestedHostCompatibilityNames.has(name)) return false
-      requestedHostCompatibilityNames.add(name)
+      if (name === '' || hostCompatibilitySettled(name) || hostCompatibilityInFlight.has(name)) return false
+      hostCompatibilityInFlight.add(name)
       return true
     })
     if (unique.length === 0) return
@@ -2645,27 +2680,20 @@ export function MarketSection(props: MarketSectionProps) {
             || !['manifest', 'undeclared', 'unavailable'].includes(item.basis)
             || (item.requirement !== null && typeof item.requirement !== 'string')
             || !Array.isArray(item.declarations)) {
-            requestedHostCompatibilityNames.delete(name)
             accepted[name] = UNAVAILABLE_HOST_COMPATIBILITY
             continue
           }
           accepted[name] = item
-          // A transient registry failure is shown as unknown, but remains
-          // retryable when navigation or a filter toggle asks again later.
-          if (item.basis === 'unavailable') requestedHostCompatibilityNames.delete(name)
         }
-        setHostCompatibility(current => ({ ...current, ...accepted }))
+        commitHostCompatibility(accepted)
       } catch {
-        for (const name of chunk) requestedHostCompatibilityNames.delete(name)
-        setHostCompatibility(current => ({
-          ...current,
-          ...Object.fromEntries(chunk.map(name => [name, UNAVAILABLE_HOST_COMPATIBILITY])),
-        }))
+        commitHostCompatibility(Object.fromEntries(chunk.map(name => [name, UNAVAILABLE_HOST_COMPATIBILITY])))
       } finally {
+        for (const name of chunk) hostCompatibilityInFlight.delete(name)
         setHostCompatibilityPending(count => Math.max(0, count - chunk.length))
       }
     }
-  }, [setHostCompatibility, setHostVersion])
+  }, [setHostVersion])
 
   useEffect(() => {
     void loadCatalog()

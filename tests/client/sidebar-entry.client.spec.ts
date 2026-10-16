@@ -92,4 +92,31 @@ describe('createSidebarEntry', () => {
     entry.markSupported()
     expect(entry.supported()).toBe(true)
   })
+
+  it('does not let a slow load overwrite a choice the user just saved', async () => {
+    let releaseLoad!: () => void
+    const loadGate = new Promise<void>(resolve => { releaseLoad = resolve })
+    let live = 0
+    const gate = createSectionGate(() => {
+      live += 1
+      return () => { live -= 1 }
+    }, false)
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      if ((init?.method ?? 'GET').toUpperCase() === 'POST') {
+        return new Response(JSON.stringify({ ok: true, enabled: true }), { status: 200 })
+      }
+      await loadGate
+      return new Response(JSON.stringify({ enabled: false }), { status: 200 })
+    }) as unknown as typeof globalThis.fetch
+    const entry = createSidebarEntry({ gate, fetch })
+    entry.markSupported()
+    const loading = entry.load()
+    await expect(entry.set(true)).resolves.toBe(true)
+    expect(entry.enabled()).toBe(true)
+    expect(live).toBe(1)
+    releaseLoad()
+    await loading
+    expect(entry.enabled()).toBe(true)
+    expect(live).toBe(1)
+  })
 })

@@ -629,6 +629,92 @@ describe('MarketSection (jsdom)', () => {
     expect(screen.getByRole('button', { name: /Update all \(1\)/ })).toBeTruthy()
   })
 
+  it('keeps the header package version across remounts (#846)', async () => {
+    stubFetch({ '/dsh-market/status': { active: false, pnpm: true, boot: 'boot-1', restart: true, installed: {}, version: '1.66.28' } })
+    const { unmount } = render(<MarketSection {...props()} />)
+    expect(await screen.findByText('v1.66.28')).toBeTruthy()
+    unmount()
+    render(<MarketSection {...props()} />)
+    expect(screen.getByText('v1.66.28')).toBeTruthy()
+  })
+
+  it('drops host-compatibility results when the host version changes (#846)', async () => {
+    stubFetch({
+      '/dsh-market/registry': { source: 'live', registry: REGISTRY, hostVersion: '0.1.2-alpha.2' },
+      '/dsh-market/discovery-compatibility': {
+        hostVersion: '0.1.2-alpha.2',
+        plugins: {
+          'dsh-loop': { status: 'incompatible', basis: 'manifest', requirement: '^0.9.0', declarations: ['^0.9.0'] },
+        },
+      },
+    })
+    const { unmount } = render(<MarketSection {...props()} />)
+    expect(await screen.findByText(en.hostFilterActive.replace('{0}', '0.1.2-alpha.2').replace('{1}', '1'))).toBeTruthy()
+    expect(screen.queryByText('dsh-loop')).toBeNull()
+    const compatBefore = fetchCalls.filter(call => call.path.includes('discovery-compatibility')).length
+    unmount()
+    stubFetch({
+      '/dsh-market/registry': { source: 'live', registry: REGISTRY, hostVersion: '0.2.0-rc.2' },
+      '/dsh-market/discovery-compatibility': {
+        hostVersion: '0.2.0-rc.2',
+        plugins: {
+          'dsh-loop': { status: 'compatible', basis: 'manifest', requirement: '*', declarations: ['*'] },
+        },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    expect(await screen.findByText(en.hostFilterActive.replace('{0}', '0.2.0-rc.2').replace('{1}', '0'))).toBeTruthy()
+    expect(screen.getByText('dsh-loop')).toBeTruthy()
+    expect(fetchCalls.filter(call => call.path.includes('discovery-compatibility')).length).toBeGreaterThan(0)
+    expect(compatBefore).toBeGreaterThan(0)
+  })
+
+  it('finishes the host-filter note after a remount mid-scan instead of freezing on 「正在检查」(#846)', async () => {
+    // Unmounting mid-flight used to drop setStates while names stayed
+    // "requested" — the next mount skipped them and froze at e.g. 665/2455.
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let calls = 0
+    const compatBody = {
+      hostVersion: '0.1.2-alpha.2',
+      plugins: {
+        'pkg-a': { status: 'compatible', basis: 'manifest', requirement: '*', declarations: ['*'] },
+        'pkg-b': { status: 'incompatible', basis: 'manifest', requirement: '^9.0.0', declarations: ['^9.0.0'] },
+      },
+    }
+    stubFetch({
+      '/dsh-market/registry': {
+        source: 'live', hostVersion: '0.1.2-alpha.2',
+        registry: {
+          ...REGISTRY,
+          count: 2,
+          plugins: [
+            { name: 'pkg-a', owner: 'a', url: 'https://github.com/a/a', category: 'tools', npm: 'pkg-a', stars: 1, added: '2026-08-01', description: { en: 'A', zh: 'A' }, install: '' },
+            { name: 'pkg-b', owner: 'b', url: 'https://github.com/b/b', category: 'tools', npm: 'pkg-b', stars: 1, added: '2026-08-01', description: { en: 'B', zh: 'B' }, install: '' },
+          ],
+        },
+      },
+    })
+    const baseFetch = globalThis.fetch
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input).split('?')[0] ?? ''
+      if (path.endsWith('/dsh-market/discovery-compatibility')) {
+        calls += 1
+        if (calls === 1) await gate
+        return new Response(JSON.stringify(compatBody), { status: 200 })
+      }
+      return baseFetch(input, init)
+    })
+    const { unmount } = render(<MarketSection {...props()} />)
+    await screen.findByText('pkg-a')
+    await waitFor(() => expect(calls).toBeGreaterThanOrEqual(1))
+    unmount()
+    render(<MarketSection {...props()} />)
+    await act(async () => { release() })
+    expect(await screen.findByText(en.hostFilterActive.replace('{0}', '0.1.2-alpha.2').replace('{1}', '1'))).toBeTruthy()
+    expect(screen.queryByText(/Checking host requirements|正在检查宿主要求/)).toBeNull()
+  })
+
   it('opens Discover with the host-provided plugin query', async () => {
     render(<MarketSection {...props()} preferredSubsectionId="discover:dsh-loop" />)
 

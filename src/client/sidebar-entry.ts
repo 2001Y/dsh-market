@@ -56,6 +56,8 @@ interface Deps {
 export function createSidebarEntry({ gate, fetch }: Deps): SidebarEntry {
   let supported = false
   let enabled = false
+  /** Bumped by every `set` so a slow initial `load` cannot overwrite it. */
+  let epoch = 0
   const listeners = new Set<() => void>()
   const notify = (): void => { for (const listener of listeners) listener() }
 
@@ -78,10 +80,13 @@ export function createSidebarEntry({ gate, fetch }: Deps): SidebarEntry {
       notify()
     },
     load: async () => {
+      const at = epoch
       try {
         const response = await fetch(api('/dsh-market/sidebar-entry'), { cache: 'no-store' })
         if (!response.ok) return
         const body = (await response.json()) as { enabled?: unknown }
+        // A POST that finished while we were in flight already owns the row.
+        if (at !== epoch) return
         accept(body.enabled === true)
       } catch {
         // No answer means no row: the default is off, and the settings
@@ -89,16 +94,23 @@ export function createSidebarEntry({ gate, fetch }: Deps): SidebarEntry {
       }
     },
     set: async (next) => {
+      const at = ++epoch
       const response = await fetch(api('/dsh-market/sidebar-entry'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ enabled: next }),
       })
-      const body = (await response.json()) as { ok?: boolean; enabled?: unknown; error?: string }
+      let body: { ok?: boolean; enabled?: unknown; error?: string }
+      try {
+        body = (await response.json()) as { ok?: boolean; enabled?: unknown; error?: string }
+      } catch {
+        throw new Error(`sidebar entry: HTTP ${response.status}`)
+      }
       if (body.ok !== true || typeof body.enabled !== 'boolean') {
         throw new Error(body.error ?? `sidebar entry: HTTP ${response.status}`)
       }
-      accept(body.enabled)
+      // A newer set() started after we did — let that one paint.
+      if (at === epoch) accept(body.enabled)
       return body.enabled
     },
   }

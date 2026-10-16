@@ -8156,7 +8156,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 		let cachedRepoHints = null;
 		let cachedHostCompatibility = {};
 		let cachedHostVersion = void 0;
-		const requestedHostCompatibilityNames = /* @__PURE__ */ new Set();
+		/** Names with an in-flight discovery-compatibility request (module-wide). */
+		const hostCompatibilityInFlight = /* @__PURE__ */ new Set();
+		/** Subscribers for useSyncExternalStore — every mounted MarketSection. */
+		const hostCompatibilityListeners = /* @__PURE__ */ new Set();
 		let cachedUpdates = {};
 		/** False until /dsh-market/updates has answered at least once this process. */
 		let cachedUpdatesReady = false;
@@ -8168,6 +8171,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 		let cachedBlockedNames = [];
 		let cachedInstalledBundles = [];
 		let cachedActivations = {};
+		/** Market package version from /status — the 「v1.66.x」 next to the title. */
+		let cachedMarketVersion = null;
 		/** Keep a React state setter and its module cache in lockstep. */
 		function cacheState(write, setState) {
 			return (value) => {
@@ -8177,6 +8182,33 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					return next;
 				});
 			};
+		}
+		/** Any cached answer counts — including unavailable. Re-querying every
+		* remount used to re-POST thousands of names; a host-version change (below)
+		* is what drops the map for a fresh scan. */
+		function hostCompatibilitySettled(name) {
+			return cachedHostCompatibility[name] !== void 0;
+		}
+		function clearHostCompatibilityCache() {
+			cachedHostCompatibility = {};
+			hostCompatibilityInFlight.clear();
+			for (const listener of hostCompatibilityListeners) listener();
+		}
+		function subscribeHostCompatibility(onStoreChange) {
+			hostCompatibilityListeners.add(onStoreChange);
+			return () => {
+				hostCompatibilityListeners.delete(onStoreChange);
+			};
+		}
+		/** Merge into the module cache and notify every mounted MarketSection — a
+		* sidebar/settings switch used to drop in-flight setStates and leave the
+		* note frozen at 「正在检查 665/2455」. */
+		function commitHostCompatibility(accepted) {
+			cachedHostCompatibility = {
+				...cachedHostCompatibility,
+				...accepted
+			};
+			for (const listener of hostCompatibilityListeners) listener();
 		}
 		/** Discover grid page-size choices — the catalog grows daily, so cap each page. */
 		const PAGE_SIZES = [
@@ -8819,7 +8851,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			* arrive as a photo of the screen, and without a version in frame the
 			* first reply always has to ask which one it was.
 			*/
-			const [version, setVersion] = (0, react.useState)(null);
+			const [version, setVersionState] = (0, react.useState)(() => cachedMarketVersion);
+			const setVersion = (0, react.useCallback)(cacheState((value) => {
+				cachedMarketVersion = value;
+			}, setVersionState), []);
 			/**
 			* The catalog's own build date (#712). The version on a card is the
 			* catalog's copy, not a live npm lookup, so a plugin published after the
@@ -8952,6 +8987,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			/** Undefined while the first catalog response is pending; null means the host cannot be located. */
 			const [hostVersion, setHostVersionState] = (0, react.useState)(() => cachedHostVersion);
 			const setHostVersion = (0, react.useCallback)((value) => {
+				if (typeof cachedHostVersion === "string" && typeof value === "string" && value !== cachedHostVersion) clearHostCompatibilityCache();
 				cachedHostVersion = value;
 				setHostVersionState(value);
 			}, []);
@@ -8966,14 +9002,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			/** The profile this page is running in, for the manual command's own
 			* `--profile` token (#872). The catalog's is always `web`. */
 			const [profileName, setProfileName] = (0, react.useState)(null);
-			const [hostCompatibility, setHostCompatibilityState] = (0, react.useState)(() => cachedHostCompatibility);
-			const setHostCompatibility = (0, react.useCallback)((value) => {
-				setHostCompatibilityState((current) => {
-					const next = typeof value === "function" ? value(current) : value;
-					cachedHostCompatibility = next;
-					return next;
-				});
-			}, []);
+			const hostCompatibility = (0, react.useSyncExternalStore)(subscribeHostCompatibility, () => cachedHostCompatibility, () => cachedHostCompatibility);
 			const [hostCompatibilityPending, setHostCompatibilityPending] = (0, react.useState)(0);
 			const [catsOpen, setCatsOpen] = (0, react.useState)(false);
 			/** Themes tab: independent from Discover's sort/time state above — a
@@ -9130,8 +9159,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			}, []);
 			const loadHostCompatibility = (0, react.useCallback)(async (names) => {
 				const unique = [...new Set(names)].filter((name) => {
-					if (name === "" || requestedHostCompatibilityNames.has(name)) return false;
-					requestedHostCompatibilityNames.add(name);
+					if (name === "" || hostCompatibilitySettled(name) || hostCompatibilityInFlight.has(name)) return false;
+					hostCompatibilityInFlight.add(name);
 					return true;
 				});
 				if (unique.length === 0) return;
@@ -9159,28 +9188,20 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 								"undeclared",
 								"unavailable"
 							].includes(item.basis) || item.requirement !== null && typeof item.requirement !== "string" || !Array.isArray(item.declarations)) {
-								requestedHostCompatibilityNames.delete(name);
 								accepted[name] = UNAVAILABLE_HOST_COMPATIBILITY;
 								continue;
 							}
 							accepted[name] = item;
-							if (item.basis === "unavailable") requestedHostCompatibilityNames.delete(name);
 						}
-						setHostCompatibility((current) => ({
-							...current,
-							...accepted
-						}));
+						commitHostCompatibility(accepted);
 					} catch {
-						for (const name of chunk) requestedHostCompatibilityNames.delete(name);
-						setHostCompatibility((current) => ({
-							...current,
-							...Object.fromEntries(chunk.map((name) => [name, UNAVAILABLE_HOST_COMPATIBILITY]))
-						}));
+						commitHostCompatibility(Object.fromEntries(chunk.map((name) => [name, UNAVAILABLE_HOST_COMPATIBILITY])));
 					} finally {
+						for (const name of chunk) hostCompatibilityInFlight.delete(name);
 						setHostCompatibilityPending((count) => Math.max(0, count - chunk.length));
 					}
 				}
-			}, [setHostCompatibility, setHostVersion]);
+			}, [setHostVersion]);
 			(0, react.useEffect)(() => {
 				loadCatalog();
 				fetch(api("/dsh-market/status"), { cache: "no-store" }).then((res) => res.json()).then((status) => {
@@ -15648,6 +15669,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 		function createSidebarEntry({ gate, fetch }) {
 			let supported = false;
 			let enabled = false;
+			/** Bumped by every `set` so a slow initial `load` cannot overwrite it. */
+			let epoch = 0;
 			const listeners = /* @__PURE__ */ new Set();
 			const notify = () => {
 				for (const listener of listeners) listener();
@@ -15672,22 +15695,30 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					notify();
 				},
 				load: async () => {
+					const at = epoch;
 					try {
 						const response = await fetch(api("/dsh-market/sidebar-entry"), { cache: "no-store" });
 						if (!response.ok) return;
 						const body = await response.json();
+						if (at !== epoch) return;
 						accept(body.enabled === true);
 					} catch {}
 				},
 				set: async (next) => {
+					const at = ++epoch;
 					const response = await fetch(api("/dsh-market/sidebar-entry"), {
 						method: "POST",
 						headers: { "content-type": "application/json" },
 						body: JSON.stringify({ enabled: next })
 					});
-					const body = await response.json();
+					let body;
+					try {
+						body = await response.json();
+					} catch {
+						throw new Error(`sidebar entry: HTTP ${response.status}`);
+					}
 					if (body.ok !== true || typeof body.enabled !== "boolean") throw new Error(body.error ?? `sidebar entry: HTTP ${response.status}`);
-					accept(body.enabled);
+					if (at === epoch) accept(body.enabled);
 					return body.enabled;
 				}
 			};
