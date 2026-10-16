@@ -10,7 +10,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  activeRegion, asRegion, DEFAULT_NPM_REGISTRY, githubRoutesFor, REGIONS, rememberGithubRoute,
+  activeRegion, asRegion, catalogSourcesFor, DEFAULT_NPM_REGISTRY, githubRoutesFor, REGIONS, rememberGithubRoute,
   resetGithubRoutePreferences, routesFor, setActiveRegion, setCustomGithubProxy, throughProxy,
 } from '../src/regions.ts'
 import { codeloadAllowBuildsKey, codeloadTarball, githubCommitOfTarget, gitAllowBuildsKey, githubRepoOfRemote, pinnedAllowBuildsKeys, pinnedGitAllowBuildsKey, repoOfTarget } from '../src/sources.ts'
@@ -64,6 +64,36 @@ describe('routesFor', () => {
       null, 'https://gh-proxy.com', 'https://ghfast.top',
     ])
     expect(routes.githubRoutes.avatar).toEqual(routes.githubRoutes.git)
+  })
+
+  it('ends the global list at the catalog package on its own registry (#891)', () => {
+    // GitHub Pages blocked and npm fast is the shape the probe cannot see:
+    // it measures the REGISTRY, so it answers `global`, whose one source is
+    // the blocked host — and the region is decided once and persisted. The
+    // package is published to that same registry, so the catalog is
+    // reachable on a machine that could never reach the origin.
+    const sources = catalogSourcesFor('global')
+    expect(sources).toHaveLength(2)
+    expect(sources[0]).toEqual({ kind: 'url', url: expect.stringContaining('awesome-dsh-plugin.com') })
+    expect(sources[1]).toEqual({ kind: 'npm', registry: DEFAULT_NPM_REGISTRY, pkg: 'dsh-plugin-catalog' })
+  })
+
+  it('changes nothing for a region whose list already carries the package (#891)', () => {
+    // China names it first, so appending it again would be a second attempt
+    // at a source that has just failed.
+    expect(catalogSourcesFor('china')).toEqual(routesFor('china', {}).catalog)
+  })
+
+  it('follows the environment override, so the fallback rides the registry in use (#891)', () => {
+    // Built from the same routesFor() the rest of the market installs from: a
+    // run pointed at an internal mirror must not fall back to the public one.
+    process.env.DSHM_NPM_MIRROR = 'https://npm.internal'
+    try {
+      expect(catalogSourcesFor('global')[1]).toEqual(
+        { kind: 'npm', registry: 'https://npm.internal', pkg: 'dsh-plugin-catalog' })
+    } finally {
+      delete process.env.DSHM_NPM_MIRROR
+    }
   })
 
   it('moves the catalog package onto whichever registry the environment named', () => {

@@ -157,6 +157,34 @@ const ROUTES: Record<Region, RegionRoutes> = {
   },
 }
 
+/**
+ * Every catalog source worth trying for a region: its own list, plus the
+ * catalog's published package on that region's own registry when the list
+ * does not already name it.
+ *
+ * The catalog hangs off a SECOND, independently blockable host (#891), and
+ * the probe that picks a region measures only the npm registry. A network
+ * where npm answers fast and GitHub Pages is blocked therefore measures
+ * `global` — whose one source is that very host — and since the region is
+ * decided once and persisted, nothing ever reconsiders: "catalog fetch
+ * failed" forever, on a machine whose registry is serving the catalog as a
+ * package all along.
+ *
+ * Appending the package closes that blind spot without asking the probe to
+ * learn about the second host, without revisiting the decision, and without
+ * sending anyone to another region's mirror: it rides the registry the probe
+ * already proved reachable. Last, not first — for everyone the official
+ * domain serves, this stays a source that is never contacted.
+ */
+export function catalogSourcesFor(region: Region): CatalogSource[] {
+  const routes = routesFor(region)
+  const sources = [...routes.catalog]
+  const served = sources.some(source => source.kind === 'npm'
+    && source.registry === routes.npmRegistry && source.pkg === CATALOG_PACKAGE)
+  if (!served) sources.push({ kind: 'npm', registry: routes.npmRegistry, pkg: CATALOG_PACKAGE })
+  return sources
+}
+
 /** Read an environment override, treating blank as unset. */
 function override(env: NodeJS.ProcessEnv, name: string): string | null {
   const raw = env[name]
