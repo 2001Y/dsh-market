@@ -9199,6 +9199,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			(0, react.useEffect)(() => {
 				if (busyUrl === null && updatingName === null) {
 					setHostBusy(false);
+					statusRef.current = {
+						...statusRef.current,
+						busy: false
+					};
 					setProgressLine(null);
 					setProgressPhase(null);
 					setProgressCurrent(null);

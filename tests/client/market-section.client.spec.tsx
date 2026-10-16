@@ -2095,6 +2095,79 @@ describe('MarketSection (jsdom)', () => {
     }
   })
 
+  it('does not refuse "run now" with the busy sample from the operation that just ended (#845 review)', async () => {
+    // liuwenji007's finding on #845: the settle branch cleared `hostBusy` but
+    // left `statusRef.current.busy` as sampled DURING that operation, and
+    // #845's own change removed the idle poll that used to correct it within
+    // 2 s. The reproducer's shape: finish an update, queue the next one while
+    // an agent is running, click 立即执行 — and be told 「另一个安装、更新或卸载还在进行」
+    // about a host that is idle (clicking again 2 s later works, because the
+    // drain's next tick refreshes the ref).
+    let statusCalls = 0
+    let installPosts = 0
+    const fetchMock = vi.fn((input: unknown, init?: RequestInit) => {
+      const path = String(input).split('?')[0]
+      const method = (init?.method ?? 'GET').toUpperCase()
+      const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status }))
+      if (path === '/dsh-market/registry') return json({ source: 'live', registry: REGISTRY, hostVersion: '0.1.2-alpha.2' })
+      if (path === '/dsh-market/installed') return json({ profile: 'web', installed: {}, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [], blocked: [] })
+      if (path === '/dsh-market/updates') return json({ updates: {} })
+      if (path === '/dsh-market/status') {
+        statusCalls += 1
+        // The only sample that ever lands is the one taken WHILE the install
+        // runs. Everything after that hangs, so nothing can quietly refresh
+        // the ref — which is the state the report describes.
+        return statusCalls === 1
+          ? json({ active: true, busy: true, pnpm: true, boot: 'boot-1', restart: true, installed: {} })
+          : new Promise<Response>(() => { /* no further sample */ })
+      }
+      if (path === '/dsh-market/install' && method === 'POST') {
+        installPosts += 1
+        if (installPosts === 1) {
+          // Slow enough that the 2 s progress poll samples it, then it settles
+          // on its own response.
+          return new Promise<Response>(resolve => {
+            setTimeout(() => resolve(new Response(JSON.stringify({ ok: true }), { status: 200 })), 2300)
+          })
+        }
+        if (installPosts === 2) {
+          // The second install is refused because a session is running, so its
+          // row goes to the queue with a 立即执行 button.
+          return json({ ok: false, agentsBusy: true, runningAgents: ['session-a'], error: 'agents are running' }, 409)
+        }
+        return json({ ok: true })
+      }
+      return Promise.reject(new Error(`unstubbed fetch: ${String(input)}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      localStorage.clear()
+      render(<MarketSection {...props()} />)
+      await screen.findByText('dsh-loop')
+
+      // One install, sampled busy while it runs, settled by its own response.
+      fireEvent.click(screen.getAllByRole('button', { name: en.install })[0]!)
+      fireEvent.click(await screen.findByRole('button', { name: en.confirmInstall }))
+      await waitFor(() => expect(statusCalls).toBeGreaterThan(0), { timeout: 5000 })
+      // Let the install settle (its own response, 2.3 s) — the card's button
+      // is disabled until then, which is why the next click waits.
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 2600)) })
+
+      // The next one is refused for the running session -> queued row.
+      fireEvent.click(screen.getAllByRole('button', { name: en.install })[1]!)
+      fireEvent.click(await screen.findByRole('button', { name: en.confirmInstall }))
+      const runNow = await screen.findByRole('button', { name: en.opRunNow }, { timeout: 5000 })
+
+      const before = installPosts
+      fireEvent.click(runNow)
+
+      await waitFor(() => expect(installPosts).toBe(before + 1))
+      expect(screen.queryByText(en.queuedRunBusy)).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('keeps the other rows queued when a batch of "run now" is clicked at once (#775)', async () => {
     // Reported: four installs sat queued behind a running agent. The sessions
     // were cancelled, all four rows were told to "run now", and only the first

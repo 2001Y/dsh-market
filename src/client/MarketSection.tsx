@@ -2727,6 +2727,12 @@ export function MarketSection(props: MarketSectionProps) {
       // that stale sample; the guarded restart route still handles the small
       // post-response lock-release window with its existing 409 retry.
       setHostBusy(false)
+      // The same sample is what `runQueuedNow` reads to decide whether the
+      // host is free (#845 review). Left in place it answered 「另一个安装、
+      // 更新或卸载还在进行」 about an idle host, for the up to 2 s until the
+      // drain's next tick — and the idle poll that used to correct it is
+      // exactly what #845 removed, so with no queued row it never came back.
+      statusRef.current = { ...statusRef.current, busy: false }
       setProgressLine(null)
       setProgressPhase(null)
       setProgressCurrent(null)
