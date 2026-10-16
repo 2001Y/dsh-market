@@ -23,6 +23,12 @@ dsh plugin --profile web add dshmarket
 
 Restart `dsh web`, then open **Settings → Plugin Market**.
 
+A host that runs under another profile name takes the same command with that
+name instead — `dsh plugin --profile <profile> add dshmarket`. On the official
+DSH Desktop app, install from the app's own **Settings → Plugins** rather than
+the command line: that profile belongs to the app's plugin manager, and the CLI
+will not change it while the app is running.
+
 **Requires dsh web 0.1.0-rc.6 or newer.** On an older host the market
 disables itself and says so in the browser console rather than rendering
 against primitives that are not there — if the Plugin Market entry never

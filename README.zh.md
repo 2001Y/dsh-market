@@ -23,6 +23,11 @@ dsh plugin --profile web add dshmarket
 
 重启 `dsh web`，打开 **设置 → 插件市场**。
 
+如果宿主用的不是 `web` 这个 profile，把它的名字写进命令即可：`dsh plugin
+--profile <profile> add dshmarket`。官方 DSH Desktop 桌面端请在应用自己的
+**设置 → 插件** 里安装，而不是用命令行：那个 profile 归应用的插件管理器所有，
+应用运行期间命令行改不了它。
+
 **需要 dsh web 0.1.0-rc.6 或更新版本。** 宿主太旧时市场会自我禁用，并在浏览器
 控制台说明原因，而不是拿缺失的原语去渲染——如果设置里根本没出现「插件市场」这
 一项，通常就是这个原因。桌面端要留意：它可能内置了比 `npm` 装到的更旧的 dsh（#139）。
