@@ -6,6 +6,7 @@
  * entries.
  */
 import { createElement as h } from 'react'
+import type { ReactNode } from 'react'
 import * as primitives from '@deepseek-ai/dsh-client-ui-primitives'
 import { missingIcons } from './icons.ts'
 import { en, zh } from './locales.ts'
@@ -17,6 +18,10 @@ import { createSectionGate } from './section-gate.ts'
 import { exportMarketLog } from './self-check.ts'
 import { SettingsCard } from './SettingsCard.tsx'
 import { installSettingsNavIcon } from './settings-nav-icon.ts'
+import { createSidebarEntry, SIDEBAR_PANEL_ID, SIDEBAR_PANEL_ORDER } from './sidebar-entry.ts'
+import type { SidebarEntry } from './sidebar-entry.ts'
+import { MarketLogo } from './MarketSection.tsx'
+import css from './Market.module.css'
 import type { ThemeSnapshot, Translate } from './market-data.ts'
 
 const NS = 'dsh-market'
@@ -73,6 +78,12 @@ interface LocaleService {
   bind(namespace: string): Translate
   subscribe(callback: () => void): () => void
   getSnapshot(): { active: string }
+}
+
+/** The subset of the host layout service the sidebar entry touches. */
+interface LayoutService {
+  selectPanel(id: string | null): void
+  panelInfo: { getSnapshot(): { activePanelId?: string | null } }
 }
 
 /** The subset of the slots service this plugin touches. */
@@ -157,13 +168,17 @@ function mountMarket(ctx: MarketClientContext): void {
   // it (#602: a shell that renders the market itself does not want a
   // duplicate nav item) and whether this package is being removed. See
   // section-gate.ts for why the orderings, not the booleans, are the work.
+  // Assigned once the sidebar controller exists, below. Closures that call
+  // buildMarketElement run after that assignment — a render during setup
+  // would see no controller, and the page simply offers no tip.
+  let sidebar: SidebarEntry | undefined
   /**
    * The market's own panel, as an element — one builder for the settings
    * section this package registers and for `market.render()` (#602). Built
    * per call: the props are live (locale, theme, the host's preferred
    * subsection), and a cached element would freeze the first caller's.
    */
-  const buildMarketElement = (ownerProps: { preferredSubsectionId?: string } = {}): unknown => marketElement({
+  const buildMarketElement = (ownerProps: { preferredSubsectionId?: string; surface?: 'settings' | 'sidebar' } = {}): unknown => marketElement({
     t,
     locale: ctx.locale,
     theme: ctx.theme,
@@ -179,6 +194,8 @@ function mountMarket(ctx: MarketClientContext): void {
     },
     exportLog: () => { void exportMarketLog().catch(() => {}) },
     preferredSubsectionId: ownerProps.preferredSubsectionId,
+    sidebar,
+    surface: ownerProps.surface ?? 'settings',
   })
 
   const sectionGate = createSectionGate(() => {
@@ -189,7 +206,7 @@ function mountMarket(ctx: MarketClientContext): void {
       label: () => t('nav'),
       locale: NS,
       inject: () => ({ t }),
-    }, (ownerProps: { preferredSubsectionId?: string } = {}) => buildMarketElement(ownerProps))
+    }, (ownerProps: { preferredSubsectionId?: string } = {}) => buildMarketElement({ ...ownerProps, surface: 'settings' }))
     // `slots.register` may not hand back a disposer on every host; the gate
     // needs one regardless, so the absence becomes a no-op rather than a
     // silently unretractable entry.
@@ -197,6 +214,41 @@ function mountMarket(ctx: MarketClientContext): void {
   })
 
   ctx.slots.inject('settings.section', () => { sectionGate.available() })
+
+  // The opt-in sidebar row (#846). Registered only while the user has it on
+  // AND the host declares sidebar panels; see sidebar-entry.ts.
+  let layout: LayoutService | undefined
+  const sidebarGate = createSectionGate(() => {
+    const offPanel = ctx.slots.register({
+      name: 'main',
+      key: SIDEBAR_PANEL_ID,
+      locale: NS,
+      inject: () => ({ t }),
+    }, () => h('div', { className: css.panelHost }, buildMarketElement({ surface: 'sidebar' }) as ReactNode))
+    const offRow = ctx.slots.register({
+      name: 'sidebar.panellist',
+      id: SIDEBAR_PANEL_ID,
+      order: SIDEBAR_PANEL_ORDER,
+      label: () => t('nav'),
+      locale: NS,
+    }, ((owner: { size?: number } = {}) => h(MarketLogo, { size: owner.size ?? 16 })) as () => unknown)
+    return () => {
+      // Leave the page before its panel goes: a selection pointing at a key
+      // that no longer exists would strand the main column on nothing.
+      if (layout?.panelInfo.getSnapshot().activePanelId === SIDEBAR_PANEL_ID) layout.selectPanel(null)
+      if (typeof offRow === 'function') (offRow as () => void)()
+      if (typeof offPanel === 'function') (offPanel as () => void)()
+    }
+  }, false)
+  sidebar = createSidebarEntry({ gate: sidebarGate, fetch: (...args) => fetch(...args) })
+  void sidebar.load()
+  ctx.slots.inject('sidebar.panellist', () => { sidebar.markSupported() })
+  ;(ctx as unknown as { inject(services: string[], callback: (scoped: { layout: LayoutService }) => void): void })
+    .inject(['layout'], (scoped) => { layout = scoped.layout })
+  const retire = (): void => {
+    sectionGate.retire()
+    sidebarGate.retire()
+  }
 
   // The control surface a host uses instead of reaching into our internals.
   // Published as a service rather than a page global so it is discoverable
@@ -240,7 +292,7 @@ function mountMarket(ctx: MarketClientContext): void {
       key: NS,
       locale: NS,
       inject: () => ({ t }),
-    }, () => h(SettingsCard, { t, onRemoved: () => { sectionGate.retire() } })))
+    }, () => h(SettingsCard, { t, sidebar, onRemoved: retire })))
   })
 
   // The card's seat on 0.1.7+ (#677). The host moved a plugin's own
@@ -270,7 +322,7 @@ function mountMarket(ctx: MarketClientContext): void {
     // `summary` is this entry's one-liner in the list, which the market's own
     // description already carries; the card is the page.
     ? null
-    : h(SettingsCard, { t, onRemoved: () => { sectionGate.retire() } })))
+    : h(SettingsCard, { t, sidebar, onRemoved: retire })))
 
   // The seat on the 0.1.7 line (#722). That release renamed the client's
   // `settingsScope` service to `settings`, so the nested inject above stopped
@@ -305,7 +357,7 @@ function mountMarket(ctx: MarketClientContext): void {
     label: () => t('nav'),
     locale: NS,
     inject: () => ({ t }),
-  }, () => h(SettingsCard, { t, onRemoved: () => { sectionGate.retire() } })))
+  }, () => h(SettingsCard, { t, sidebar, onRemoved: retire })))
 
   const Toast = () => h(InstallToast, { t })
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({

@@ -11,7 +11,7 @@ import { resolve } from 'node:path'
 import { StrictMode } from 'react'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { MarketSection, OwnerAvatar, resetMarketPortalHost, resetThemePreviewCache } from '../../src/client/MarketSection.tsx'
+import { MarketSection, OwnerAvatar, resetHostCompatibilityCache, resetMarketPortalHost, resetThemePreviewCache } from '../../src/client/MarketSection.tsx'
 import css from '../../src/client/Market.module.css'
 import { downloadStatsText } from '../../src/client/download-stats.ts'
 import { SEARCH_DELAY_MS } from '../../src/client/SearchInput.tsx'
@@ -155,6 +155,7 @@ function fakeStorage(): Storage {
 beforeEach(() => {
   vi.stubGlobal('localStorage', fakeStorage())
   stubFetch(); resetGithubRouting(); resetScreenshotsCache(); resetThemePreviewCache()
+  resetHostCompatibilityCache()
 })
 afterEach(() => {
   cleanup()
@@ -575,6 +576,143 @@ describe('MarketSection (jsdom)', () => {
     fireEvent.click(await screen.findByText(en.hostAll))
     await waitFor(() => expect(screen.getByText('dsh-loop')).toBeTruthy())
     expect(localStorage.getItem('dshm-host-filter')).toBe('all')
+  })
+
+  it('reuses host-compatibility results across remounts so the sidebar page does not rescan (#846)', async () => {
+    stubFetch({
+      '/dsh-market/discovery-compatibility': {
+        hostVersion: '0.1.2-alpha.2',
+        plugins: {
+          'dsh-loop': { status: 'incompatible', basis: 'manifest', requirement: '^0.9.0', declarations: ['^0.9.0'] },
+        },
+      },
+    })
+    const note = en.hostFilterActive.replace('{0}', '0.1.2-alpha.2').replace('{1}', '1')
+    const { unmount } = render(<MarketSection {...props()} />)
+    expect(await screen.findByText(note)).toBeTruthy()
+    const callsBeforeRemount = fetchCalls.filter(call => call.path.includes('discovery-compatibility')).length
+    expect(callsBeforeRemount).toBeGreaterThan(0)
+    unmount()
+    const marked = fetchCalls.length
+    render(<MarketSection {...props()} />)
+    expect(await screen.findByText(note)).toBeTruthy()
+    expect(screen.queryByText('dsh-loop')).toBeNull()
+    expect(
+      fetchCalls.slice(marked).filter(call => call.path.includes('discovery-compatibility')),
+      'remount must not POST discovery-compatibility again for names already scanned',
+    ).toEqual([])
+  })
+
+  it('keeps update badges painted across remounts so the sidebar entry matches settings (#846)', async () => {
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web',
+        installed: { 'dsh-loop': '^1.0.0' },
+        live: ['dsh-loop'],
+        disabled: [],
+        notes: {},
+      },
+      '/dsh-market/updates': {
+        updates: {
+          'dsh-loop': {
+            kind: 'npm', version: '1.0.0', current: '1.0.0', latest: '1.2.0', updateAvailable: true,
+          },
+        },
+      },
+    })
+    const { unmount } = render(<MarketSection {...props()} />)
+    expect(await screen.findByRole('button', { name: /Update all \(1\)/ })).toBeTruthy()
+    unmount()
+    // No network yet — the button must still come from the shared cache, not
+    // wait on /dsh-market/updates the way an empty remount used to.
+    render(<MarketSection {...props()} />)
+    expect(screen.getByRole('button', { name: /Update all \(1\)/ })).toBeTruthy()
+  })
+
+  it('keeps the header package version across remounts (#846)', async () => {
+    stubFetch({ '/dsh-market/status': { active: false, pnpm: true, boot: 'boot-1', restart: true, installed: {}, version: '1.66.28' } })
+    const { unmount } = render(<MarketSection {...props()} />)
+    expect(await screen.findByText('v1.66.28')).toBeTruthy()
+    unmount()
+    render(<MarketSection {...props()} />)
+    expect(screen.getByText('v1.66.28')).toBeTruthy()
+  })
+
+  it('drops host-compatibility results when the host version changes (#846)', async () => {
+    stubFetch({
+      '/dsh-market/registry': { source: 'live', registry: REGISTRY, hostVersion: '0.1.2-alpha.2' },
+      '/dsh-market/discovery-compatibility': {
+        hostVersion: '0.1.2-alpha.2',
+        plugins: {
+          'dsh-loop': { status: 'incompatible', basis: 'manifest', requirement: '^0.9.0', declarations: ['^0.9.0'] },
+        },
+      },
+    })
+    const { unmount } = render(<MarketSection {...props()} />)
+    expect(await screen.findByText(en.hostFilterActive.replace('{0}', '0.1.2-alpha.2').replace('{1}', '1'))).toBeTruthy()
+    expect(screen.queryByText('dsh-loop')).toBeNull()
+    const compatBefore = fetchCalls.filter(call => call.path.includes('discovery-compatibility')).length
+    unmount()
+    stubFetch({
+      '/dsh-market/registry': { source: 'live', registry: REGISTRY, hostVersion: '0.2.0-rc.2' },
+      '/dsh-market/discovery-compatibility': {
+        hostVersion: '0.2.0-rc.2',
+        plugins: {
+          'dsh-loop': { status: 'compatible', basis: 'manifest', requirement: '*', declarations: ['*'] },
+        },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    expect(await screen.findByText(en.hostFilterActive.replace('{0}', '0.2.0-rc.2').replace('{1}', '0'))).toBeTruthy()
+    expect(screen.getByText('dsh-loop')).toBeTruthy()
+    expect(fetchCalls.filter(call => call.path.includes('discovery-compatibility')).length).toBeGreaterThan(0)
+    expect(compatBefore).toBeGreaterThan(0)
+  })
+
+  it('finishes the host-filter note after a remount mid-scan instead of freezing on 「正在检查」(#846)', async () => {
+    // Unmounting mid-flight used to drop setStates while names stayed
+    // "requested" — the next mount skipped them and froze at e.g. 665/2455.
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    let calls = 0
+    const compatBody = {
+      hostVersion: '0.1.2-alpha.2',
+      plugins: {
+        'pkg-a': { status: 'compatible', basis: 'manifest', requirement: '*', declarations: ['*'] },
+        'pkg-b': { status: 'incompatible', basis: 'manifest', requirement: '^9.0.0', declarations: ['^9.0.0'] },
+      },
+    }
+    stubFetch({
+      '/dsh-market/registry': {
+        source: 'live', hostVersion: '0.1.2-alpha.2',
+        registry: {
+          ...REGISTRY,
+          count: 2,
+          plugins: [
+            { name: 'pkg-a', owner: 'a', url: 'https://github.com/a/a', category: 'tools', npm: 'pkg-a', stars: 1, added: '2026-08-01', description: { en: 'A', zh: 'A' }, install: '' },
+            { name: 'pkg-b', owner: 'b', url: 'https://github.com/b/b', category: 'tools', npm: 'pkg-b', stars: 1, added: '2026-08-01', description: { en: 'B', zh: 'B' }, install: '' },
+          ],
+        },
+      },
+    })
+    const baseFetch = globalThis.fetch
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input).split('?')[0] ?? ''
+      if (path.endsWith('/dsh-market/discovery-compatibility')) {
+        calls += 1
+        if (calls === 1) await gate
+        return new Response(JSON.stringify(compatBody), { status: 200 })
+      }
+      return baseFetch(input, init)
+    })
+    const { unmount } = render(<MarketSection {...props()} />)
+    await screen.findByText('pkg-a')
+    await waitFor(() => expect(calls).toBeGreaterThanOrEqual(1))
+    unmount()
+    render(<MarketSection {...props()} />)
+    await act(async () => { release() })
+    expect(await screen.findByText(en.hostFilterActive.replace('{0}', '0.1.2-alpha.2').replace('{1}', '1'))).toBeTruthy()
+    expect(screen.queryByText(/Checking host requirements|正在检查宿主要求/)).toBeNull()
   })
 
   it('opens Discover with the host-provided plugin query', async () => {
@@ -6854,6 +6992,69 @@ describe('category row expansion', () => {
     }
   })
 
+  it('remeasures the collapsed budget when the category wrap grows wider (#846 sidebar)', async () => {
+    // The sidebar page is often much wider than the settings dialog. Without
+    // a resize pass, a budget measured at the first (narrow or zero) width
+    // leaves a half-empty category row on the wide panel.
+    let chipsPerRow = 4
+    let wrapWidth = 400
+    const offsetTopDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop')
+    const offsetHeightDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+    const clientWidthDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth')
+    Object.defineProperty(HTMLElement.prototype, 'offsetTop', {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.dataset.chip !== '1') return 0
+        const siblings = [...(this.parentElement?.children ?? [])]
+          .filter((el): el is HTMLElement => (el as HTMLElement).dataset?.chip === '1')
+        return Math.floor(siblings.indexOf(this) / chipsPerRow) * 32
+      },
+    })
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) { return this.className.includes('catsWrap') ? 90 : 26 },
+    })
+    Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+      configurable: true,
+      get(this: HTMLElement) { return this.className.includes('catsWrap') ? wrapWidth : 300 },
+    })
+    let resizeCats: (width: number) => void = () => { throw new Error('cats wrap is not observed') }
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(target: Element) {
+        if (!(target instanceof HTMLElement) || !target.className.includes('catsWrap')) return
+        resizeCats = width => {
+          wrapWidth = width
+          chipsPerRow = width >= 800 ? 8 : 4
+          this.callback([
+            { target, contentRect: { width } } as ResizeObserverEntry,
+          ], this as unknown as ResizeObserver)
+        }
+      }
+      unobserve() {}
+      disconnect() {}
+    })
+    try {
+      stubFetch({ '/dsh-market/registry': { source: 'snapshot', registry: { ...REGISTRY, categories: CATS } } })
+      const { container } = render(<MarketSection {...props()} />)
+      await screen.findByText('dsh-loop')
+      const chipCount = () => container.querySelectorAll('[data-chip="1"]').length
+      // 4/row × 2 rows → 8 fit → budget 7 → show 6 categories + 「全部」.
+      await waitFor(() => expect(chipCount()).toBe(7))
+      act(() => resizeCats(900))
+      // 8/row × 2 rows fits every chip; collapsed shows the full set.
+      await waitFor(() => expect(chipCount()).toBe(11))
+    } finally {
+      if (offsetTopDesc) Object.defineProperty(HTMLElement.prototype, 'offsetTop', offsetTopDesc)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'offsetTop')
+      if (offsetHeightDesc) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', offsetHeightDesc)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'offsetHeight')
+      if (clientWidthDesc) Object.defineProperty(HTMLElement.prototype, 'clientWidth', clientWidthDesc)
+      else Reflect.deleteProperty(HTMLElement.prototype, 'clientWidth')
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('does not auto-collapse when there is too little to scroll for the collapse to hold (#266)', async () => {
     // The loop this prevents: collapsing shrinks the sticky header, which
     // shrinks the scrollable content; with barely more content than
@@ -8001,5 +8202,79 @@ describe('empty filter recovery', () => {
     render(<MarketSection {...props()} />)
     await screen.findByText(en.empty)
     expect(screen.queryByRole('button', { name: 'Clear filters' })).toBeNull()
+  })
+})
+
+describe('sidebar shortcut tip (#846)', () => {
+  function fakeSidebar(options: { supported?: boolean; enabled?: boolean; ready?: boolean } = {}): {
+    supported(): boolean
+    enabled(): boolean
+    ready(): boolean
+    set(next: boolean): Promise<boolean>
+    subscribe(listener: () => void): () => void
+    settle(): void
+    sets: boolean[]
+  } {
+    let enabled = options.enabled === true
+    let ready = options.ready !== false
+    const listeners = new Set<() => void>()
+    const sets: boolean[] = []
+    const notify = (): void => { for (const listener of listeners) listener() }
+    return {
+      sets,
+      supported: () => options.supported !== false,
+      enabled: () => enabled,
+      ready: () => ready,
+      subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+      settle: () => { ready = true; notify() },
+      set: async (next) => {
+        sets.push(next)
+        enabled = next
+        ready = true
+        notify()
+        return next
+      },
+    }
+  }
+
+  it('offers the shortcut on the settings page when the sidebar is off', async () => {
+    const sidebar = fakeSidebar()
+    render(<MarketSection {...props()} sidebar={sidebar} surface="settings" />)
+    expect(await screen.findByText(en.sidebarTip)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: en.setSidebarOn }))
+    await waitFor(() => { expect(sidebar.sets).toEqual([true]) })
+    expect(screen.queryByText(en.sidebarTip)).toBeNull()
+  })
+
+  it('waits until the saved choice is known before offering the tip', async () => {
+    const sidebar = fakeSidebar({ ready: false })
+    render(<MarketSection {...props()} sidebar={sidebar} surface="settings" />)
+    await screen.findByText(en.nav)
+    expect(screen.queryByText(en.sidebarTip)).toBeNull()
+    act(() => { sidebar.settle() })
+    expect(await screen.findByText(en.sidebarTip)).toBeTruthy()
+  })
+
+  it('stays quiet on the sidebar page and when the shortcut is already on', async () => {
+    const off = fakeSidebar()
+    const { rerender } = render(<MarketSection {...props()} sidebar={off} surface="sidebar" />)
+    await screen.findByText(en.nav)
+    expect(screen.queryByText(en.sidebarTip)).toBeNull()
+
+    rerender(<MarketSection {...props()} sidebar={fakeSidebar({ enabled: true })} surface="settings" />)
+    expect(screen.queryByText(en.sidebarTip)).toBeNull()
+  })
+
+  it('does not return after the user dismissed it', () => {
+    localStorage.setItem('dshm-sidebar-tip-dismissed', '1')
+    render(<MarketSection {...props()} sidebar={fakeSidebar()} surface="settings" />)
+    expect(screen.queryByText(en.sidebarTip)).toBeNull()
+  })
+
+  it('hides the tip for good when the user dismisses it', async () => {
+    render(<MarketSection {...props()} sidebar={fakeSidebar()} surface="settings" />)
+    fireEvent.click(await screen.findByRole('button', { name: en.sidebarTipDismiss }))
+    expect(localStorage.getItem('dshm-sidebar-tip-dismissed')).toBe('1')
+    expect(screen.queryByText(en.sidebarTip)).toBeNull()
   })
 })

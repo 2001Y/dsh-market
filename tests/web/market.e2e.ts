@@ -18,6 +18,31 @@ import type { WebScaffold } from './scaffold.ts'
 
 const HAS_DSH = dshAvailable()
 
+/**
+ * Host-compat filtering (#872) is on by default and fills in results in
+ * chunks. While 「正在检查」is still moving, the visible catalog shrinks and
+ * search ties reorder — page totals and "compact vs spaced" ranking then
+ * flake against this lane's own earlier snapshot. Pin the preference off so
+ * these specs assert catalog/search behaviour, not the async scan.
+ */
+async function pinHostFilterOff(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    // The test tsconfig has no DOM lib; the page does.
+    const store = (globalThis as any).localStorage
+    try { store.setItem('dshm-host-filter', 'all') } catch { /* private mode */ }
+  })
+}
+
+/** If a prior run left the filter on, wait until the note stops saying "checking". */
+async function waitHostFilterQuiet(page: Page): Promise<void> {
+  await page.waitForFunction(() => {
+    const note = (globalThis as any).document.querySelector('[class*="hostFilterNote"]')
+    if (note === null) return true
+    const text = String(note.textContent ?? '')
+    return !/正在检查宿主要求|Checking host requirements/.test(text)
+  }, undefined, { timeout: 120_000 })
+}
+
 describe.skipIf(!HAS_DSH)('web e2e: plugin market', () => {
   let scaffold: WebScaffold
   let browser: Browser
@@ -29,6 +54,7 @@ describe.skipIf(!HAS_DSH)('web e2e: plugin market', () => {
     browser = await chromium.launch()
     page = await browser.newPage({ viewport: { width: 1500, height: 950 } })
     tripwire = watchConsole(page)
+    await pinHostFilterOff(page)
     await openMarketPage(page, scaffold)
     // A fresh home greets with onboarding dialogs (testing notice, API-key
     // prompt, …); click through whichever appear until none are left.
@@ -111,6 +137,7 @@ describe.skipIf(!HAS_DSH)('web e2e: plugin market', () => {
   })
 
   it('search and category filter the grid', async () => {
+    await waitHostFilterQuiet(page)
     const search = page.getByPlaceholder(/搜索插件|Search plugins/)
     const gridNames = () => page.locator('[class*="masonryCol"] [class*="nm"]').allTextContents()
 
@@ -151,6 +178,7 @@ describe.skipIf(!HAS_DSH)('web e2e: plugin market', () => {
       return Number(numbers[numbers.length - 1] ?? 0)
     }
 
+    await waitHostFilterQuiet(page)
     const allPages = await pages()
     expect(allPages).toBeGreaterThan(1)
     const chips = page.locator('[class*="catsWrap"] [data-chip="1"]')
@@ -161,6 +189,7 @@ describe.skipIf(!HAS_DSH)('web e2e: plugin market', () => {
     expect(await pages(), 'a category must hold fewer pages than the whole catalog').toBeLessThan(allPages)
     await chips.nth(0).click() // back to All
     await page.waitForTimeout(400)
+    await waitHostFilterQuiet(page)
     // ...and clearing the filter restores the full catalog, so a chip that
     // silently stuck would not read as a pass.
     expect(await pages()).toBe(allPages)
@@ -168,6 +197,7 @@ describe.skipIf(!HAS_DSH)('web e2e: plugin market', () => {
 
   it('treats adjacent Han and Latin search terms like their spaced forms', async () => {
     await page.getByRole('button', { name: /^(发现|Discover)$/ }).click()
+    await waitHostFilterQuiet(page)
     const search = page.getByPlaceholder(/搜索插件|Search plugins/)
     const gridNames = () => page.locator('[class*="masonryCol"] [class*="nm"]').allTextContents()
 

@@ -601,6 +601,7 @@ const hot = vi.hoisted(() => ({
   region: undefined as 'global' | 'china' | undefined,
   regionAuto: undefined as true | undefined,
   githubProxy: undefined as string | undefined,
+  sidebarEntry: undefined as boolean | undefined,
   notes: {} as Record<string, string>,
   favorites: [] as string[],
   blocked: [] as string[],
@@ -629,6 +630,7 @@ vi.mock('../src/hot.ts', async (importOriginal) => ({
     disabled: hot.disabled, groups: hot.groups, groupOrder: hot.groupOrder,
     channel: hot.channel, region: hot.region, regionAuto: hot.regionAuto,
     githubProxy: hot.githubProxy,
+    ...(hot.sidebarEntry === true ? { sidebarEntry: true } : {}),
     notes: hot.notes, favorites: hot.favorites, blocked: hot.blocked,
     updateExempt: hot.updateExempt,
     buildEnv: hot.buildEnv,
@@ -641,10 +643,12 @@ vi.mock('../src/hot.ts', async (importOriginal) => ({
     disabled: Set<string>; groups: Record<string, string[]>; groupOrder: string[]
     channel?: 'stable' | 'beta' | 'dev'; region?: 'global' | 'china'; regionAuto?: true
     githubProxy?: string
+    sidebarEntry?: boolean
     notes?: Record<string, string>; favorites?: string[]; blocked?: string[]
     updateExempt?: string[]
     buildEnv?: Record<string, string>
   }) => {
+    if (Object.prototype.hasOwnProperty.call(state, 'sidebarEntry')) hot.sidebarEntry = state.sidebarEntry === true ? true : undefined
     hot.disabled = new Set(state.disabled)
     hot.groups = state.groups
     hot.groupOrder = state.groupOrder
@@ -916,6 +920,7 @@ beforeEach(() => {
   hot.region = undefined
   hot.regionAuto = undefined
   hot.githubProxy = undefined
+  hot.sidebarEntry = undefined
   hot.notes = {}
   hot.favorites = []
   hot.blocked = []
@@ -7567,6 +7572,41 @@ describe('self-uninstall — the market removing itself from its settings card',
     // Adding a way to remove the market must not quietly open the old one.
     const viaGeneric = await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'dshmarket' })
     expect(viaGeneric.status).toBe(400)
+  })
+})
+
+describe('sidebar entry (#846)', () => {
+  it('is off until the user turns it on', async () => {
+    expect((await bed.dispatch('GET', '/dsh-market/sidebar-entry')).json).toEqual({ enabled: false })
+    expect((await bed.dispatch('GET', '/dsh-market/status')).json.sidebarEntry).toBe(false)
+  })
+
+  it('round-trips the choice through state.json and /status', async () => {
+    const on = await bed.dispatch('POST', '/dsh-market/sidebar-entry', { enabled: true })
+    expect(on.status).toBe(200)
+    expect(on.json).toEqual({ ok: true, enabled: true })
+    expect(hot.sidebarEntry).toBe(true)
+    expect((await bed.dispatch('GET', '/dsh-market/sidebar-entry')).json).toEqual({ enabled: true })
+    expect((await bed.dispatch('GET', '/dsh-market/status')).json.sidebarEntry).toBe(true)
+
+    const off = await bed.dispatch('POST', '/dsh-market/sidebar-entry', { enabled: false })
+    expect(off.json).toEqual({ ok: true, enabled: false })
+    expect(hot.sidebarEntry).toBeUndefined()
+  })
+
+  it('is not put back by a later write from the long-lived state (#435)', async () => {
+    await bed.dispatch('POST', '/dsh-market/sidebar-entry', { enabled: true })
+    await bed.dispatch('POST', '/dsh-market/sidebar-entry', { enabled: false })
+    // Any other route that writes the whole state object.
+    expect((await bed.dispatch('POST', '/dsh-market/region', { region: 'china' })).status).toBe(200)
+    expect(hot.sidebarEntry).toBeUndefined()
+  })
+
+  it('rejects anything but a boolean, and other origins', async () => {
+    expect((await bed.dispatch('POST', '/dsh-market/sidebar-entry', { enabled: 'yes' })).status).toBe(400)
+    expect((await bed.dispatch('POST', '/dsh-market/sidebar-entry', {})).status).toBe(400)
+    expect((await bed.dispatch('POST', '/dsh-market/sidebar-entry', { enabled: true }, { crossOrigin: true })).status).toBe(403)
+    expect(hot.sidebarEntry).toBeUndefined()
   })
 })
 

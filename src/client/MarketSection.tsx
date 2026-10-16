@@ -50,6 +50,7 @@ import { clearSettled, drop, enqueue, patch as patchRecord, recordForUrl } from 
 import type { OperationRecord } from './operations.ts'
 import { Diagnostics } from './Diagnostics.tsx'
 import { exportMarketLog } from './self-check.ts'
+import type { SidebarEntry } from './sidebar-entry.ts'
 import {
   installCommandFor,
   api, applyGithubRouting, avatarColor, catalogEntryForInstalled, entryForDep, failureText, githubRouteCandidates, groupSwitchState, installedForCatalog, isGenerationSpec, isInstalled, localizeBilingual, localizeBilingualList, looksTerminal, matchInstalledName, orderedCategories, pluginCategories,
@@ -835,20 +836,33 @@ function ThemeCover({ plugin, onOpen, t }: {
  * Below the two-up breakpoint the CSS collapses to one column, and dealing
  * alternately would then interleave the list wrongly — so at one column the
  * items stay in a single stack in their original order.
+ *
+ * Two columns at the settings dialog's width; the sidebar page is wider and
+ * gets a third once each column still has room for a full card.
  */
-function Masonry<T>({ items, render, columns = 2 }: {
+function Masonry<T>({ items, render }: {
   items: T[]
   render: (item: T) => ReactNode
-  columns?: number
 }) {
   const wide = useMediaWide()
-  if (!wide || columns < 2) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [columns, setColumns] = useState(2)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (el === null || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry !== undefined) setColumns(Math.min(3, Math.max(2, Math.floor((entry.contentRect.width + 10) / 290))))
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [wide])
+  if (!wide) {
     return <div className={css.masonry}><div className={css.masonryCol}>{items.map(render)}</div></div>
   }
   const buckets: T[][] = Array.from({ length: columns }, () => [])
   items.forEach((item, index) => { buckets[index % columns]!.push(item) })
   return (
-    <div className={css.masonry}>
+    <div ref={ref} className={css.masonry}>
       {buckets.map((bucket, index) => (
         <div key={index} className={css.masonryCol}>{bucket.map(render)}</div>
       ))}
@@ -1142,7 +1156,7 @@ export function resetMarketPortalHost(): void {
  * "market" section id — both now draw the geometry in market-mark.ts, so the
  * nav entry and the section it opens cannot drift apart.
  */
-function MarketLogo({ size = 16, style, animated = false }: { size?: number; style?: CSSProperties; animated?: boolean }) {
+export function MarketLogo({ size = 16, style, animated = false }: { size?: number; style?: CSSProperties; animated?: boolean }) {
   return (
     <svg width={size} height={size} viewBox={`0 0 ${MARK_VIEW_BOX} ${MARK_VIEW_BOX}`} fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style={style}>
       <g fill="currentColor">
@@ -1511,11 +1525,91 @@ function CatalogVersionMark({ version, tip }: { version: string | null | undefin
  * Module-scope caches so re-entering the section renders instantly instead
  * of refetching and rebuilding from a spinner (#30 by @StarsTom). Module
  * state survives section switches; a background refetch keeps it current.
+ *
+ * #846 adds the sidebar page as a second mount of MarketSection. Anything
+ * that paints buttons or badges (updates, live/disabled, tab counts, host
+ * filter) has to live here too — otherwise each open starts from empty and
+ * the Installed tab's red dot / 「更新」buttons flash off then on, and the
+ * two entries disagree until both refetches finish.
  */
 let cachedRegistry: Registry | null = null
 let cachedInstalled: InstalledMap | null = null
 let cachedRepoIdentities: InstalledRepoIdentities | null = null
 let cachedRepoHints: InstalledRepoHints | null = null
+let cachedHostCompatibility: HostCompatibilityMap = {}
+let cachedHostVersion: string | null | undefined = undefined
+/** Names with an in-flight discovery-compatibility request (module-wide). */
+const hostCompatibilityInFlight = new Set<string>()
+/** Subscribers for useSyncExternalStore — every mounted MarketSection. */
+const hostCompatibilityListeners = new Set<() => void>()
+let cachedUpdates: Record<string, UpdateStatus> = {}
+/** False until /dsh-market/updates has answered at least once this process. */
+let cachedUpdatesReady = false
+let cachedInstalledReady = false
+let cachedSkins: string[] = []
+let cachedDisabledNames: string[] = []
+let cachedInstalledFiles: string[] = []
+let cachedFavoriteUrls: string[] = []
+let cachedBlockedNames: string[] = []
+let cachedInstalledBundles: string[] = []
+let cachedActivations: Record<string, ActivationInfo> = {}
+/** Market package version from /status — the 「v1.66.x」 next to the title. */
+let cachedMarketVersion: string | null = null
+
+/** Keep a React state setter and its module cache in lockstep. */
+function cacheState<T>(write: (value: T) => void, setState: (value: T | ((current: T) => T)) => void) {
+  return (value: T | ((current: T) => T)): void => {
+    setState(current => {
+      const next = typeof value === 'function' ? (value as (current: T) => T)(current) : value
+      write(next)
+      return next
+    })
+  }
+}
+
+/** Test helper: drop the shared surface caches between cases. */
+export function resetHostCompatibilityCache(): void {
+  cachedHostCompatibility = {}
+  cachedHostVersion = undefined
+  hostCompatibilityInFlight.clear()
+  cachedUpdates = {}
+  cachedUpdatesReady = false
+  cachedInstalledReady = false
+  cachedSkins = []
+  cachedDisabledNames = []
+  cachedInstalledFiles = []
+  cachedFavoriteUrls = []
+  cachedBlockedNames = []
+  cachedInstalledBundles = []
+  cachedActivations = {}
+  cachedMarketVersion = null
+}
+
+/** Any cached answer counts — including unavailable. Re-querying every
+ * remount used to re-POST thousands of names; a host-version change (below)
+ * is what drops the map for a fresh scan. */
+function hostCompatibilitySettled(name: string): boolean {
+  return cachedHostCompatibility[name] !== undefined
+}
+
+function clearHostCompatibilityCache(): void {
+  cachedHostCompatibility = {}
+  hostCompatibilityInFlight.clear()
+  for (const listener of hostCompatibilityListeners) listener()
+}
+
+function subscribeHostCompatibility(onStoreChange: () => void): () => void {
+  hostCompatibilityListeners.add(onStoreChange)
+  return () => { hostCompatibilityListeners.delete(onStoreChange) }
+}
+
+/** Merge into the module cache and notify every mounted MarketSection — a
+ * sidebar/settings switch used to drop in-flight setStates and leave the
+ * note frozen at 「正在检查 665/2455」. */
+function commitHostCompatibility(accepted: HostCompatibilityMap): void {
+  cachedHostCompatibility = { ...cachedHostCompatibility, ...accepted }
+  for (const listener of hostCompatibilityListeners) listener()
+}
 
 /** Discover grid page-size choices — the catalog grows daily, so cap each page. */
 const PAGE_SIZES = [24, 48, 96]
@@ -1700,6 +1794,13 @@ export interface MarketSectionProps {
   }
   /** Optional host-provided destination: `discover:<query>` or `installed:<query>`. */
   preferredSubsectionId?: string
+  /** The opt-in sidebar row. Absent, the page offers no shortcut tip. */
+  sidebar?: SidebarEntry
+  /**
+   * Which mount this is. The settings page may offer the sidebar shortcut;
+   * the sidebar page must not ask to open itself.
+   */
+  surface?: 'settings' | 'sidebar'
 }
 
 interface SourceMigrationConfirm {
@@ -1736,6 +1837,15 @@ function readHostFilterPreference(): boolean {
   try { return localStorage.getItem(HOST_FILTER_KEY) !== 'all' } catch { return true }
 }
 
+/** "不再提示" on the settings-page sidebar tip. A missing store means show it. */
+const SIDEBAR_TIP_KEY = 'dshm-sidebar-tip-dismissed'
+function readSidebarTipDismissed(): boolean {
+  try { return localStorage.getItem(SIDEBAR_TIP_KEY) === '1' } catch { return false }
+}
+function writeSidebarTipDismissed(): void {
+  try { localStorage.setItem(SIDEBAR_TIP_KEY, '1') } catch { /* private mode: the tip can return */ }
+}
+
 export function MarketSection(props: MarketSectionProps) {
   const t = props.t
   const initialWebdav = useMemo(savedWebdav, [])
@@ -1744,6 +1854,41 @@ export function MarketSection(props: MarketSectionProps) {
     () => props.locale.getSnapshot(),
   )
   const lang = String(localeSnap.active).toLowerCase().startsWith('zh') ? 'zh' : 'en'
+  const sidebar = props.sidebar
+  const [sidebarSnap, setSidebarSnap] = useState(() => ({
+    supported: sidebar?.supported() === true,
+    enabled: sidebar?.enabled() === true,
+    ready: sidebar?.ready() === true,
+  }))
+  const [sidebarTipDismissed, setSidebarTipDismissed] = useState(readSidebarTipDismissed)
+  const [sidebarTipSaving, setSidebarTipSaving] = useState(false)
+  const [sidebarTipError, setSidebarTipError] = useState<string | null>(null)
+  useEffect(() => {
+    if (sidebar === undefined) return undefined
+    const sync = (): void => {
+      setSidebarSnap({
+        supported: sidebar.supported(),
+        enabled: sidebar.enabled(),
+        ready: sidebar.ready(),
+      })
+    }
+    sync()
+    return sidebar.subscribe(sync)
+  }, [sidebar])
+  // Wait for load(): until then enabled is the default off, not a known choice.
+  const showSidebarTip = (props.surface ?? 'settings') === 'settings'
+    && sidebarSnap.ready
+    && sidebarSnap.supported
+    && !sidebarSnap.enabled
+    && !sidebarTipDismissed
+  const enableSidebar = useCallback(() => {
+    if (sidebar === undefined) return
+    setSidebarTipError(null)
+    setSidebarTipSaving(true)
+    void sidebar.set(true).catch((cause: unknown) => {
+      setSidebarTipError(cause instanceof Error ? cause.message : String(cause))
+    }).finally(() => { setSidebarTipSaving(false) })
+  }, [sidebar])
   // null when the composition has no theme service — the Themes tab hides.
   const themeSnap = useSyncExternalStore(
     props.themeStore.subscribe,
@@ -1763,8 +1908,10 @@ export function MarketSection(props: MarketSectionProps) {
     cachedRepoHints = value
     setRepoHintsState(value)
   }, [])
-  const [installedFiles, setInstalledFiles] = useState<string[]>([])
-  const [skins, setSkins] = useState<string[]>([])
+  const [installedFiles, setInstalledFilesState] = useState<string[]>(() => cachedInstalledFiles)
+  const setInstalledFiles = useCallback(cacheState(value => { cachedInstalledFiles = value }, setInstalledFilesState), [])
+  const [skins, setSkinsState] = useState<string[]>(() => cachedSkins)
+  const setSkins = useCallback(cacheState(value => { cachedSkins = value }, setSkinsState), [])
   const [tab, setTab] = useState(() => {
     const saved = sessionStorage.getItem('dshm-tab')
     if (saved !== null) sessionStorage.removeItem('dshm-tab')
@@ -1823,9 +1970,13 @@ export function MarketSection(props: MarketSectionProps) {
    * Persisted in localStorage so a refresh keeps the queue; only `queued`
    * records persist — `running` recovery stays on the dshm-pending paths.
    */
-  const [updates, setUpdates] = useState<Record<string, UpdateStatus>>({})
+  const [updates, setUpdatesState] = useState<Record<string, UpdateStatus>>(() => cachedUpdates)
+  const setUpdates = useCallback(cacheState(value => { cachedUpdates = value }, setUpdatesState), [])
   const queueRestoredRef = useRef(false)
-  const [queueSnapshotReady, setQueueSnapshotReady] = useState({ installed: false, updates: false })
+  const [queueSnapshotReady, setQueueSnapshotReady] = useState({
+    installed: cachedInstalledReady,
+    updates: cachedUpdatesReady,
+  })
   useEffect(() => {
     if (queueRestoredRef.current) return
     let saved: unknown = null
@@ -2145,15 +2296,19 @@ export function MarketSection(props: MarketSectionProps) {
   const [hotNames, setHotNames] = useState<string[]>([])
   const [progressLine, setProgressLine] = useState<string | null>(null)
   /** Per-package activation states from /dsh-market/installed + operations. */
-  const [activations, setActivations] = useState<Record<string, ActivationInfo>>({})
+  const [activations, setActivationsState] = useState<Record<string, ActivationInfo>>(() => cachedActivations)
+  const setActivations = useCallback(cacheState(value => { cachedActivations = value }, setActivationsState), [])
   /** #60: persisted disable list + custom groups, straight from /installed. */
-  const [disabledNames, setDisabledNames] = useState<string[]>([])
+  const [disabledNames, setDisabledNamesState] = useState<string[]>(() => cachedDisabledNames)
+  const setDisabledNames = useCallback(cacheState(value => { cachedDisabledNames = value }, setDisabledNamesState), [])
   /** The user's own note per plugin (#347): package name → text. */
   const [notes, setNotes] = useState<Record<string, string>>({})
   /** Catalog URLs bookmarked for later install (#414). */
-  const [favoriteUrls, setFavoriteUrls] = useState<string[]>([])
+  const [favoriteUrls, setFavoriteUrlsState] = useState<string[]>(() => cachedFavoriteUrls)
+  const setFavoriteUrls = useCallback(cacheState(value => { cachedFavoriteUrls = value }, setFavoriteUrlsState), [])
   /** Package names the user hid from Discover (#657). */
-  const [blockedNames, setBlockedNames] = useState<string[]>([])
+  const [blockedNames, setBlockedNamesState] = useState<string[]>(() => cachedBlockedNames)
+  const setBlockedNames = useCallback(cacheState(value => { cachedBlockedNames = value }, setBlockedNamesState), [])
   const [updateExemptNames, setUpdateExemptNames] = useState<string[]>([])
   /** Rows the user asked to show the AUTHOR's description on, despite a note. */
   const [showTheirs, setShowTheirs] = useState<string[]>([])
@@ -2204,7 +2359,8 @@ export function MarketSection(props: MarketSectionProps) {
    * arrive as a photo of the screen, and without a version in frame the
    * first reply always has to ask which one it was.
    */
-  const [version, setVersion] = useState<string | null>(null)
+  const [version, setVersionState] = useState<string | null>(() => cachedMarketVersion)
+  const setVersion = useCallback(cacheState(value => { cachedMarketVersion = value }, setVersionState), [])
   /**
    * The catalog's own build date (#712). The version on a card is the
    * catalog's copy, not a live npm lookup, so a plugin published after the
@@ -2323,7 +2479,8 @@ export function MarketSection(props: MarketSectionProps) {
   /** Export failure shown INSIDE the picker so it is never hidden behind it. */
   const [exportError, setExportError] = useState<string | null>(null)
   /** Bundle-only plugin names from /dsh-market/installed (picker list). */
-  const [installedBundles, setInstalledBundles] = useState<string[]>([])
+  const [installedBundles, setInstalledBundlesState] = useState<string[]>(() => cachedInstalledBundles)
+  const setInstalledBundles = useCallback(cacheState(value => { cachedInstalledBundles = value }, setInstalledBundlesState), [])
   const bodyRef = useRef<HTMLDivElement | null>(null)
   /** Hidden file input behind the Import button (a Button can't host an <input>). */
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -2331,7 +2488,16 @@ export function MarketSection(props: MarketSectionProps) {
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [timeRange, setTimeRange] = useState<TimeRange>('all')
   /** Undefined while the first catalog response is pending; null means the host cannot be located. */
-  const [hostVersion, setHostVersion] = useState<string | null | undefined>(undefined)
+  const [hostVersion, setHostVersionState] = useState<string | null | undefined>(() => cachedHostVersion)
+  const setHostVersion = useCallback((value: string | null | undefined) => {
+    // Same process, different DSH — peer ranges were judged against the old
+    // host and must not keep filtering the list.
+    if (typeof cachedHostVersion === 'string' && typeof value === 'string' && value !== cachedHostVersion) {
+      clearHostCompatibilityCache()
+    }
+    cachedHostVersion = value
+    setHostVersionState(value)
+  }, [])
   /** v1 is deliberately opt-in: undeclared/unknown entries stay visible even when enabled. */
   // #872: ON by default. The report measured it on a live 0.2.0-rc.2 host —
   // 175 discovered plugins, 45 of them declaring that host — so the default
@@ -2347,10 +2513,12 @@ export function MarketSection(props: MarketSectionProps) {
   /** The profile this page is running in, for the manual command's own
    * `--profile` token (#872). The catalog's is always `web`. */
   const [profileName, setProfileName] = useState<string | null>(null)
-  const [hostCompatibility, setHostCompatibility] = useState<HostCompatibilityMap>({})
+  const hostCompatibility = useSyncExternalStore(
+    subscribeHostCompatibility,
+    () => cachedHostCompatibility,
+    () => cachedHostCompatibility,
+  )
   const [hostCompatibilityPending, setHostCompatibilityPending] = useState(0)
-  /** Names already resolved or in flight; failed/unavailable names are released for an explicit retry. */
-  const requestedHostCompatibility = useRef(new Set<string>())
   const [catsOpen, setCatsOpen] = useState(false)
   /** Themes tab: independent from Discover's sort/time state above — a
    * search or sort choice in one tab has no business resetting the other. */
@@ -2453,6 +2621,7 @@ export function MarketSection(props: MarketSectionProps) {
         setBrokenPlugins(isRecordOfRecords(body.brokenPlugins) ? body.brokenPlugins : {})
         installedReadGen.current += 1
         setHostDependencyFindings(findings)
+        cachedInstalledReady = true
         setQueueSnapshotReady(ready => ({ ...ready, installed: true }))
       })
       .catch(() => {})
@@ -2460,10 +2629,11 @@ export function MarketSection(props: MarketSectionProps) {
       .then(res => res.json())
       .then(body => {
         setUpdates(body.updates || {})
+        cachedUpdatesReady = true
         setQueueSnapshotReady(ready => ({ ...ready, updates: true }))
       })
       .catch(() => {})
-  }, [])
+  }, [setActivations, setBlockedNames, setDisabledNames, setFavoriteUrls, setInstalledBundles, setInstalledFiles, setSkins, setUpdates])
 
   /** Active Bundles count as installed in Discover without becoming package-manager targets. */
   const catalogInstalled = useMemo(
@@ -2530,8 +2700,8 @@ export function MarketSection(props: MarketSectionProps) {
 
   const loadHostCompatibility = useCallback(async (names: readonly string[]): Promise<void> => {
     const unique = [...new Set(names)].filter(name => {
-      if (name === '' || requestedHostCompatibility.current.has(name)) return false
-      requestedHostCompatibility.current.add(name)
+      if (name === '' || hostCompatibilitySettled(name) || hostCompatibilityInFlight.has(name)) return false
+      hostCompatibilityInFlight.add(name)
       return true
     })
     if (unique.length === 0) return
@@ -2562,27 +2732,20 @@ export function MarketSection(props: MarketSectionProps) {
             || !['manifest', 'undeclared', 'unavailable'].includes(item.basis)
             || (item.requirement !== null && typeof item.requirement !== 'string')
             || !Array.isArray(item.declarations)) {
-            requestedHostCompatibility.current.delete(name)
             accepted[name] = UNAVAILABLE_HOST_COMPATIBILITY
             continue
           }
           accepted[name] = item
-          // A transient registry failure is shown as unknown, but remains
-          // retryable when navigation or a filter toggle asks again later.
-          if (item.basis === 'unavailable') requestedHostCompatibility.current.delete(name)
         }
-        setHostCompatibility(current => ({ ...current, ...accepted }))
+        commitHostCompatibility(accepted)
       } catch {
-        for (const name of chunk) requestedHostCompatibility.current.delete(name)
-        setHostCompatibility(current => ({
-          ...current,
-          ...Object.fromEntries(chunk.map(name => [name, UNAVAILABLE_HOST_COMPATIBILITY])),
-        }))
+        commitHostCompatibility(Object.fromEntries(chunk.map(name => [name, UNAVAILABLE_HOST_COMPATIBILITY])))
       } finally {
+        for (const name of chunk) hostCompatibilityInFlight.delete(name)
         setHostCompatibilityPending(count => Math.max(0, count - chunk.length))
       }
     }
-  }, [])
+  }, [setHostVersion])
 
   useEffect(() => {
     void loadCatalog()
@@ -5511,8 +5674,28 @@ export function MarketSection(props: MarketSectionProps) {
   const categories = data === null ? [] : Object.keys(data.categories)
 
   useLayoutEffect(() => { setVisibleCats(null); setVisibleCatsOneRow(null) }, [lang, categories.length])
+  // The sidebar page is often much wider than the settings dialog. A budget
+  // measured once at the first (sometimes still-zero) width left a half-empty
+  // category row on the wide panel — remeasure whenever the wrap's width
+  // actually changes.
   useLayoutEffect(() => {
-    if (catsOpen || visibleCats !== null) return
+    const el = catsWrapRef.current
+    if (el === null || typeof ResizeObserver === 'undefined') return
+    let width = el.clientWidth
+    const observer = new ResizeObserver(entries => {
+      const next = entries[0]?.contentRect.width ?? el.clientWidth
+      // jsdom (and a pre-layout frame in the host) reports 0 — treating that
+      // as a real shrink cleared the budget and left every chip painted.
+      if (next < 80 || Math.abs(next - width) < 8) return
+      width = next
+      setVisibleCats(null)
+      setVisibleCatsOneRow(null)
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [data])
+  useLayoutEffect(() => {
+    if (visibleCats !== null) return
     const el = catsWrapRef.current
     if (el === null) return
     const chips = [...el.children].filter((c): c is HTMLElement => (c as HTMLElement).dataset?.chip === '1')
@@ -5531,7 +5714,7 @@ export function MarketSection(props: MarketSectionProps) {
     let fitsOneRow = 0
     for (const chip of chips) { if (chip.offsetTop < rowTwoTop) fitsOneRow += 1 }
     setVisibleCatsOneRow(fitsOneRow >= chips.length ? fitsOneRow : Math.max(1, fitsOneRow - 1))
-  }, [catsOpen, visibleCats, data])
+  }, [visibleCats, data])
 
   useEffect(() => {
     if (catsSentinel === null || typeof IntersectionObserver === 'undefined') return
@@ -5719,6 +5902,27 @@ export function MarketSection(props: MarketSectionProps) {
           )}
           </div>
         </div>
+        {showSidebarTip && (
+          <div className={css.sidebarTip}>
+            <span>{t('sidebarTip')}</span>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={sidebarTipSaving}
+              onClick={enableSidebar}
+            >{t('setSidebarOn')}</Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={sidebarTipSaving}
+              onClick={() => {
+                writeSidebarTipDismissed()
+                setSidebarTipDismissed(true)
+              }}
+            >{t('sidebarTipDismiss')}</Button>
+            {sidebarTipError !== null && <span>{sidebarTipError}</span>}
+          </div>
+        )}
         <div className={css.sub}>
           <span>{t('subtitle')}</span>
           <a className={css.submitLink} href="https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md" target="_blank" rel="noreferrer">{t('submitPlugin')}</a>
@@ -6220,7 +6424,7 @@ export function MarketSection(props: MarketSectionProps) {
                           revealed two rows out of six and read as "nothing
                           happened". Collapsed after measuring needs no cap: the list
                           is already sliced to what fits. */}
-                      <div ref={catsWrapRef} className={visibleCats === null ? `${css.catsWrap} ${css.catsCollapsed}` : css.catsWrap}>
+                      <div ref={catsWrapRef} className={visibleCats === null && !catsExpanded ? `${css.catsWrap} ${css.catsCollapsed}` : css.catsWrap}>
                         {(() => {
                           // Collapsed, the selected category is pulled to the front so it never hides.
                           // Whenever collapsed (default, or auto-collapsed by the sticky

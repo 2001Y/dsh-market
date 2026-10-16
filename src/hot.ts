@@ -303,6 +303,20 @@ export interface MarketState {
   /** User-supplied HTTPS prefix used when the built-in GitHub routes fail. */
   githubProxy?: string
   /**
+   * Whether the market also opens from its own row in the sidebar (#846).
+   *
+   * Off unless the user turned it on: the sidebar's global rows are the
+   * host's own pages, and installing plugins is occasional, so a row nobody
+   * asked for would be a permanent fixture for an occasional task. The
+   * settings entry stays either way — it is the way in on hosts with no
+   * sidebar panels, and turning this off must never leave the market
+   * unreachable.
+   *
+   * Omission preserves, an explicit value wins — the githubProxy contract,
+   * because turning it off has to be expressible.
+   */
+  sidebarEntry?: boolean
+  /**
    * Packages the market removed from the profile's own declarations because
    * the build on disk can no longer compose (#663).
    *
@@ -483,6 +497,7 @@ export function readMarketState(profileDir: string): MarketState {
       blocked?: unknown
       updateExempt?: unknown
       brokenPlugins?: unknown
+      sidebarEntry?: unknown
     }
     const disabled = uniqueStrings(state.disabled !== undefined ? state.disabled : state.disabledSkins)
     const groups: Record<string, string[]> = {}
@@ -516,6 +531,7 @@ export function readMarketState(profileDir: string): MarketState {
       updateExempt: updateExemptNames(state.updateExempt),
       ...(githubProxy === null ? {} : { githubProxy }),
       ...(brokenPlugins === undefined ? {} : { brokenPlugins }),
+      ...(state.sidebarEntry === true ? { sidebarEntry: true } : {}),
       buildEnv: buildEnvFromUnknown(state.buildEnv),
     }
   } catch (error) {
@@ -611,6 +627,9 @@ export function writeMarketState(profileDir: string, state: MarketState): void {
   const broken = Object.prototype.hasOwnProperty.call(state, 'brokenPlugins')
     ? state.brokenPlugins
     : onDisk.brokenPlugins
+  const sidebarEntry = Object.prototype.hasOwnProperty.call(state, 'sidebarEntry')
+    ? state.sidebarEntry
+    : onDisk.sidebarEntry
   publishFile(stateFile(profileDir), JSON.stringify({
     disabled: [...state.disabled],
     groups: state.groups,
@@ -632,6 +651,8 @@ export function writeMarketState(profileDir: string, state: MarketState): void {
     // githubProxy above, and the one a repaired plugin needs: the entry
     // exists only while the declaration is still missing.
     ...(broken === undefined ? {} : { brokenPlugins: broken }),
+    // Written only while on: off and never-chosen are the same answer.
+    ...(sidebarEntry === true ? { sidebarEntry: true } : {}),
     ...(state.region === undefined ? {} : { region: state.region }),
     ...(state.regionAuto === true ? { regionAuto: true } : {}),
     // Omitted while not saved, so a card that was never touched keeps

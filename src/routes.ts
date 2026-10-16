@@ -3743,6 +3743,7 @@ export function mountMarketRoutes(
           // by the user — the card explains a choice it made on their behalf
           // exactly once, so nobody has to wonder why downloads moved.
           regionAuto,
+          sidebarEntry: marketState.sidebarEntry === true,
           restart: restartAllowed(config),
           // Named so the UI can say WHY the button is gone. A blank
           // "no restart button" is the state #229 reported as broken.
@@ -5308,6 +5309,49 @@ sendJson(response, 200, { updates })
           invalidateUpdates()
           logEvent('info', 'region', `download region set to ${wanted}`)
           sendJson(response, 200, { ok: true, region: wanted })
+        } catch (error) {
+          sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
+        }
+      },
+    }),
+
+    /**
+     * Whether the market also has its own row in the sidebar (#846).
+     *
+     * GET as well as POST: the browser half decides whether to register the
+     * row on every page load, and `/dsh-market/status` probes pnpm on each
+     * call — too much to pay before a sidebar row can appear.
+     *
+     * Written through the long-lived `marketState` like the region, so a
+     * later write from that object cannot put the old answer back (#435).
+     */
+    registerRoute({
+      kind: 'exact',
+      path: '/dsh-market/sidebar-entry',
+      handler: async (request, response) => {
+        if (request.method === 'GET') {
+          sendJson(response, 200, { enabled: marketState.sidebarEntry === true })
+          return
+        }
+        if (request.method !== 'POST') {
+          response.writeHead(405, { allow: 'GET, POST' })
+          response.end()
+          return
+        }
+        if (!sameOrigin(request)) {
+          sendJson(response, 403, { error: 'untrusted origin' })
+          return
+        }
+        try {
+          const body = (await readJsonBody(request)) as { enabled?: unknown }
+          if (typeof body.enabled !== 'boolean') {
+            sendJson(response, 400, { error: 'enabled must be true or false' })
+            return
+          }
+          marketState.sidebarEntry = body.enabled
+          writeMarketState(activeProfileDir, marketState)
+          logEvent('info', 'sidebar', `sidebar entry ${body.enabled ? 'on' : 'off'}`)
+          sendJson(response, 200, { ok: true, enabled: body.enabled })
         } catch (error) {
           sendJson(response, 500, { error: error instanceof Error ? error.message : String(error) })
         }
