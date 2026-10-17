@@ -6314,6 +6314,100 @@ describe('lost install response (#100)', () => {
       vi.useRealTimers()
     }
   })
+
+  it('settles the live install task the poll recovers, so the entry stops claiming it is running (#904)', async () => {
+    // The same lost-response path as above, one layer up: the poll is the only
+    // witness that the install landed. It released the card's busy state, but
+    // the record `doInstall` put in the Tasks panel was still `running`, so the
+    // entry kept saying "Installing 1/1" for the rest of the mount — and only
+    // switching settings tabs (a remount that drops `records`) cleared it.
+    vi.useFakeTimers()
+    try {
+      let installedNow: Record<string, string> = {}
+      vi.stubGlobal('fetch', vi.fn((url: string) => {
+        const path = String(url).split('?')[0]
+        if (path === '/dsh-market/install') return Promise.reject(new TypeError('network connection was lost'))
+        const payload =
+          path === '/dsh-market/registry' ? { source: 'live', registry: REGISTRY }
+          : path === '/dsh-market/installed' ? { profile: 'web', installed: installedNow, live: [] }
+          : path === '/dsh-market/status' ? { active: false, busy: false, pnpm: true, boot: 'boot-1', restart: true, installed: installedNow }
+          : path === '/dsh-market/updates' ? { updates: {} }
+          : null
+        if (payload === null) return Promise.reject(new Error(`unstubbed fetch: ${String(url)}`))
+        return Promise.resolve(new Response(JSON.stringify(payload), { status: 200 }))
+      }))
+      render(<MarketSection {...props()} />)
+      await vi.waitFor(() => { screen.getByText('dsh-loop') })
+      await vi.waitFor(() => { screen.getByRole('button', { name: en.tabInstalled }) })
+      let card: HTMLElement | null = screen.getByText('dsh-loop')
+      while (card !== null && within(card).queryAllByRole('button', { name: en.install }).length === 0) {
+        card = card.parentElement
+      }
+      fireEvent.click(within(card!).getAllByRole('button', { name: en.install })[0]!)
+      await vi.waitFor(() => { screen.getByRole('button', { name: en.confirmInstall }) })
+      fireEvent.click(screen.getByRole('button', { name: en.confirmInstall }))
+      await vi.advanceTimersByTimeAsync(100)
+      await vi.waitFor(() => { screen.getByRole('button', { name: `${en.opInstalling} 1/1` }) })
+
+      installedNow = { 'dsh-loop': '^1.0.0' }
+      await vi.advanceTimersByTimeAsync(4500)
+      await vi.waitFor(() => { expect(sessionStorage.getItem('dshm-pending')).toBeNull() })
+
+      // The operation is over; the Tasks entry must say so on its own.
+      expect(screen.queryByRole('button', { name: `${en.opInstalling} 1/1` })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: en.opTitle }))
+      const panel = document.querySelector('[class*="opPanel"]')
+      expect(panel?.textContent).toContain('dsh-loop')
+      expect(panel?.textContent).toContain(en.opDoneRefresh)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('releases the live install task when the lost install never lands (#904)', async () => {
+    // The mirror outcome of the poll recovery: two idle polls conclude the
+    // install died. The banner says so, but the record must stop running too —
+    // otherwise the entry is left claiming "Installing 1/1" over a failure.
+    vi.useFakeTimers()
+    try {
+      vi.stubGlobal('fetch', vi.fn((url: string) => {
+        const path = String(url).split('?')[0]
+        if (path === '/dsh-market/install') return Promise.reject(new TypeError('network connection was lost'))
+        const payload =
+          path === '/dsh-market/registry' ? { source: 'live', registry: REGISTRY }
+          : path === '/dsh-market/installed' ? { profile: 'web', installed: {}, live: [] }
+          : path === '/dsh-market/status' ? { active: false, busy: false, pnpm: true, boot: 'boot-1', restart: true, installed: {} }
+          : path === '/dsh-market/updates' ? { updates: {} }
+          : null
+        if (payload === null) return Promise.reject(new Error(`unstubbed fetch: ${String(url)}`))
+        return Promise.resolve(new Response(JSON.stringify(payload), { status: 200 }))
+      }))
+      render(<MarketSection {...props()} />)
+      await vi.waitFor(() => { screen.getByText('dsh-loop') })
+      await vi.waitFor(() => { screen.getByRole('button', { name: en.tabInstalled }) })
+      let card: HTMLElement | null = screen.getByText('dsh-loop')
+      while (card !== null && within(card).queryAllByRole('button', { name: en.install }).length === 0) {
+        card = card.parentElement
+      }
+      fireEvent.click(within(card!).getAllByRole('button', { name: en.install })[0]!)
+      await vi.waitFor(() => { screen.getByRole('button', { name: en.confirmInstall }) })
+      fireEvent.click(screen.getByRole('button', { name: en.confirmInstall }))
+      await vi.advanceTimersByTimeAsync(100)
+      await vi.waitFor(() => { screen.getByRole('button', { name: `${en.opInstalling} 1/1` }) })
+
+      await vi.advanceTimersByTimeAsync(2100)
+      await vi.advanceTimersByTimeAsync(2100)
+      await vi.waitFor(() => { expect(sessionStorage.getItem('dshm-pending')).toBeNull() })
+
+      expect(screen.queryByRole('button', { name: `${en.opInstalling} 1/1` })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: en.opTitle }))
+      const panel = document.querySelector('[class*="opPanel"]')
+      expect(panel?.textContent).toContain('dsh-loop')
+      expect(panel?.textContent).toContain(en.installFail)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('standing restart notice for host-reported pending plugins', () => {

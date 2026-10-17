@@ -9420,7 +9420,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							const statusInstalled = installedMap(status.installed);
 							if (!sameInstalledMap(installed, statusInstalled)) refreshInstalled();
 							if (readSession("dshm-pending") !== null && busyUrl !== null && status.busy !== true) {
-								if (data !== null && data.plugins.some((p) => p.url === busyUrl && isInstalled(p, statusInstalled, repoIdentities, data.plugins, repoHints))) {
+								const url = busyUrl;
+								if (data !== null && data.plugins.some((p) => p.url === url && isInstalled(p, statusInstalled, repoIdentities, data.plugins, repoHints))) {
 									idleStrikes.current = 0;
 									sessionStorage.removeItem("dshm-pending");
 									const recovered = recoveredInstall.current;
@@ -9428,7 +9429,12 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 										setRecords((list) => drop(list, recovered.id));
 										recoveredInstall.current = null;
 									}
-									setDoneUrls((urls) => urls.includes(busyUrl) ? urls : urls.concat(busyUrl));
+									setRecords((list) => list.map((record) => record.kind === "install" && record.url === url && record.state === "running" ? {
+										...record,
+										state: "done",
+										needsRefresh: true
+									} : record));
+									setDoneUrls((urls) => urls.includes(url) ? urls : urls.concat(url));
 									setBusyUrl(null);
 								} else if (++idleStrikes.current >= 2) {
 									idleStrikes.current = 0;
@@ -9438,6 +9444,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 										setRecords((list) => drop(list, recovered.id));
 										recoveredInstall.current = null;
 									}
+									setRecords((list) => list.map((record) => record.kind === "install" && record.url === url && record.state === "running" ? {
+										...record,
+										state: "failed",
+										reason: t("installFail")
+									} : record));
 									setBusyUrl(null);
 									setInstallError(t("installFail") + " — " + t("exportLog"));
 								}

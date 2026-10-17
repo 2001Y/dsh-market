@@ -2950,8 +2950,9 @@ export function MarketSection(props: MarketSectionProps) {
             // declare the install done nor count an idle strike yet — a
             // premature banner here invited a restart click into a 409.
             if (pending !== null && busyUrl !== null && status.busy !== true) {
+              const url = busyUrl
               const nowInstalled = data !== null && data.plugins.some(p =>
-                p.url === busyUrl && isInstalled(p, statusInstalled, repoIdentities, data.plugins, repoHints))
+                p.url === url && isInstalled(p, statusInstalled, repoIdentities, data.plugins, repoHints))
               if (nowInstalled) {
                 idleStrikes.current = 0
                 sessionStorage.removeItem('dshm-pending')
@@ -2960,7 +2961,18 @@ export function MarketSection(props: MarketSectionProps) {
                   setRecords(list => drop(list, recovered.id))
                   recoveredInstall.current = null
                 }
-                setDoneUrls(urls => urls.includes(busyUrl) ? urls : urls.concat(busyUrl))
+                // This poll is the only witness when the install response was
+                // lost (#100): the record `doInstall` created is still
+                // `running`, and releasing only the card's busy state leaves
+                // the Tasks entry claiming "Installing 1/1" for the rest of
+                // the mount — until settings travel remounts the section and
+                // drops `records` with it. The install landed, so the record
+                // has to land with it (#904).
+                setRecords(list => list.map(record =>
+                  record.kind === 'install' && record.url === url && record.state === 'running'
+                    ? { ...record, state: 'done' as const, needsRefresh: true }
+                    : record))
+                setDoneUrls(urls => urls.includes(url) ? urls : urls.concat(url))
                 setBusyUrl(null)
               } else if (++idleStrikes.current >= 2) {
                 // Host is idle and the plugin never landed: the install died
@@ -2973,6 +2985,13 @@ export function MarketSection(props: MarketSectionProps) {
                   setRecords(list => drop(list, recovered.id))
                   recoveredInstall.current = null
                 }
+                // Same release for the record this mount created: an install
+                // that died without a response must not leave the Tasks entry
+                // "Installing 1/1" either (#904).
+                setRecords(list => list.map(record =>
+                  record.kind === 'install' && record.url === url && record.state === 'running'
+                    ? { ...record, state: 'failed' as const, reason: t('installFail') }
+                    : record))
                 setBusyUrl(null)
                 setInstallError(t('installFail') + ' — ' + t('exportLog'))
               }
