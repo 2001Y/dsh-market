@@ -3074,18 +3074,22 @@ export function MarketSection(props: MarketSectionProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [data, tab, q, cat, timeRange, lang, hostCompatibility, compatibleWithHost, blockedNameSet, installed, repoIdentities, repoHints])
   const recentRowRef = useRef<HTMLDivElement>(null)
+  // Two per row, like the grid below it: three across read as a different
+  // list rather than the same one (and left an odd one out at any width).
+  // Two rows of two keeps the block square and the cards the size of the
+  // cards underneath.
   const [recentColumns, setRecentColumns] = useState(1)
   const hasRecent = recentlyAdded.length > 0
   useLayoutEffect(() => {
     const row = recentRowRef.current
     if (row === null || typeof ResizeObserver === 'undefined') return
     const observer = new ResizeObserver(([entry]) => {
-      if (entry !== undefined) setRecentColumns(Math.max(1, Math.floor((entry.contentRect.width + 10) / 290)))
+      if (entry !== undefined) setRecentColumns(Math.min(2, Math.max(1, Math.floor((entry.contentRect.width + 10) / 290))))
     })
     observer.observe(row)
     return () => observer.disconnect()
   }, [hasRecent, loadError])
-  const recentPlugins = recentlyAdded.slice(0, recentColumns)
+  const recentPlugins = recentlyAdded.slice(0, recentColumns * 2)
   const { currentPage, totalPages, pageSize, goToPage, changePageSize } =
     usePagination(plugins.length, [q, cat, sortField, sortDir, timeRange, compatibleWithHost], scrollToTop)
   const pagePlugins = plugins.slice((currentPage - 1) * pageSize, currentPage * pageSize)
@@ -6490,7 +6494,7 @@ export function MarketSection(props: MarketSectionProps) {
                     {hasRecent && (
                       <section aria-labelledby="dshm-recently-added">
                         <h3 id="dshm-recently-added" className={css.favoritesSectionHead}>{t('recentlyAdded')}</h3>
-                        <div ref={recentRowRef} className={css.recentRow} style={{ gridTemplateColumns: `repeat(${recentPlugins.length}, minmax(0, 1fr))` }}>
+                        <div ref={recentRowRef} className={css.recentRow} style={{ gridTemplateColumns: `repeat(${recentColumns}, minmax(0, 1fr))` }}>
                           {recentPlugins.map(plugin => pluginCard(plugin, `recent:${plugin.url}`))}
                         </div>
                       </section>

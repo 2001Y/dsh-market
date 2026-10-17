@@ -7977,14 +7977,17 @@ describe('recently added Discover row (#780)', () => {
   })
   afterEach(() => { vi.restoreAllMocks() })
 
-  it('keeps only the ranked cards that fit one row as the container resizes', async () => {
+  it('keeps two cards per row, two rows deep, as the container resizes', async () => {
     stubFetch({ '/dsh-market/registry': registry() })
     const { container } = render(<MarketSection {...props()} />)
     await screen.findByRole('region', { name: en.recentlyAdded })
     expect(recent().getAttribute('aria-labelledby')).toBe('dshm-recently-added')
     expect(within(recent()).getByRole('heading', { name: en.recentlyAdded }).id).toBe('dshm-recently-added')
     const main = rankedNames(container)
-    for (const [width, count] of [[280, 1], [569, 1], [570, 2], [859, 2], [860, 3], [1150, 4], [1440, 5], [280, 1]] as const) {
+    // Two columns at every width that fits two cards (the same 290px card
+    // the grid below uses), and at most two rows of them: three across read
+    // as a different list from the one underneath.
+    for (const [width, count] of [[280, 2], [569, 2], [570, 4], [859, 4], [860, 4], [1150, 4], [1440, 4], [280, 2]] as const) {
       act(() => resizeRecent(width))
       expect(names(recent())).toEqual(recentNames.slice(0, count))
       expect(within(recent()).getAllByRole('button', { name: en.install })).toHaveLength(count)
@@ -8008,7 +8011,7 @@ describe('recently added Discover row (#780)', () => {
     expect(observedRecent).not.toBe(detachedRow)
     expect(observedRecent?.isConnected).toBe(true)
     act(() => resizeRecent(280))
-    expect(names(recent())).toEqual(recentNames.slice(0, 1))
+    expect(names(recent())).toEqual(recentNames.slice(0, 2))
   })
 
   it('opens only one menu for either copy of a recent plugin', async () => {
@@ -8032,7 +8035,7 @@ describe('recently added Discover row (#780)', () => {
     stubFetch({ '/dsh-market/registry': registry() })
     const { container } = render(<MarketSection {...props()} />)
     await screen.findByRole('region', { name: en.recentlyAdded })
-    expect(names(recent())).toEqual(recentNames)
+    expect(names(recent())).toEqual(recentNames.slice(0, 4))
     // Old, future and dateless entries still belong to the all-time main list.
     expect(rankedNames(container)).toEqual([
       'old-high', 'old', 'future', 'undated', 'recent-high', 'cutoff', 'zero', 'github-high', 'github-low',
@@ -8043,7 +8046,7 @@ describe('recently added Discover row (#780)', () => {
       const main = rankedNames(container)
       expect(main.indexOf('cutoff')).toBeLessThan(main.indexOf('recent-high'))
     })
-    expect(names(recent())).toEqual(recentNames)
+    expect(names(recent())).toEqual(recentNames.slice(0, 4))
     fireEvent.click(screen.getByRole('button', { name: en.filter }))
   })
 

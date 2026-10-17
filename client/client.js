@@ -9587,12 +9587,12 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				const row = recentRowRef.current;
 				if (row === null || typeof ResizeObserver === "undefined") return;
 				const observer = new ResizeObserver(([entry]) => {
-					if (entry !== void 0) setRecentColumns(Math.max(1, Math.floor((entry.contentRect.width + 10) / 290)));
+					if (entry !== void 0) setRecentColumns(Math.min(2, Math.max(1, Math.floor((entry.contentRect.width + 10) / 290))));
 				});
 				observer.observe(row);
 				return () => observer.disconnect();
 			}, [hasRecent, loadError]);
-			const recentPlugins = recentlyAdded.slice(0, recentColumns);
+			const recentPlugins = recentlyAdded.slice(0, recentColumns * 2);
 			const { currentPage, totalPages, pageSize, goToPage, changePageSize } = usePagination(plugins.length, [
 				q,
 				cat,
@@ -13188,7 +13188,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 								}), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
 									ref: recentRowRef,
 									className: Market_module_css_default.recentRow,
-									style: { gridTemplateColumns: `repeat(${recentPlugins.length}, minmax(0, 1fr))` },
+									style: { gridTemplateColumns: `repeat(${recentColumns}, minmax(0, 1fr))` },
 									children: recentPlugins.map((plugin) => pluginCard(plugin, `recent:${plugin.url}`))
 								})]
 							}),
