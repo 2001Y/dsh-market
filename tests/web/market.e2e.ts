@@ -13,7 +13,7 @@
 import { chromium } from 'playwright'
 import type { Browser, Page } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { dshAvailable, launchMarketScaffold, openMarketPage, watchConsole } from './scaffold.ts'
+import { dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi, watchConsole } from './scaffold.ts'
 import type { WebScaffold } from './scaffold.ts'
 
 const HAS_DSH = dshAvailable()
@@ -95,8 +95,7 @@ describe.skipIf(!HAS_DSH)('web e2e: plugin market', () => {
   })
 
   it('opens Settings → Plugin Market and renders the catalog paginated', async () => {
-    await page.getByRole('button', { name: /^(设置|Settings)$/ }).first().click()
-    await page.getByRole('button', { name: /插件市场|Plugin Market/ }).click()
+    await openMarketUi(page)
     await page.waitForSelector('[class*="masonryCol"] > [class*="card"]', { timeout: 30_000 })
     // Direct children only: a card with curated screenshots nests a
     // `.cardShots`/`.cardShot` thumbnail strip, and both class names also

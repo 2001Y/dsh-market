@@ -14,7 +14,7 @@
 
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { dshAvailable, launchMarketScaffold, openMarketPage } from './scaffold.ts'
+import { dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi } from './scaffold.ts'
 import type { WebScaffold } from './scaffold.ts'
 
 describe.skipIf(!dshAvailable())('web e2e: card header', () => {
@@ -32,8 +32,7 @@ describe.skipIf(!dshAvailable())('web e2e: card header', () => {
   afterAll(async () => { await browser?.close(); await s?.close() })
 
   it('shows author-and-avatar as one byline under the plugin name', async () => {
-    await page.getByRole('button', { name: /^(设置|Settings)$/ }).first().click()
-    await page.getByText(/插件市场|Plugin Market/).last().click()
+    await openMarketUi(page)
     await page.waitForSelector('[class*="masonryCol"] [class*="card"]', { timeout: 60_000 })
     // Walk the grid until a compound identity appears. The title attribute
     // keeps the raw catalog name, so this compares what the card SHOWS

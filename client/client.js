@@ -209,6 +209,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			setSelfUpdatedHint: "已下载完成。重启 DeepSeek Harness 后新版本才会生效——页面会先显示新版本号。",
 			setSidebar: "侧栏入口",
 			setSidebarHint: "在侧栏「插件」下方显示市场。设置里的入口不变。",
+			setSidebarOnlyDoorHint: "这个宿主没有市场设置页，这一行就是进入市场的入口。",
 			setSidebarOn: "显示",
 			setSidebarOff: "不显示",
 			sidebarTip: "想更快打开？可在侧栏显示。",
@@ -945,6 +946,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			setSelfUpdatedHint: "Downloaded. Restart DeepSeek Harness for it to take effect — the page will already show the new version.",
 			setSidebar: "Sidebar shortcut",
 			setSidebarHint: "Shows the market below Plugins in the sidebar. The Settings entry stays.",
+			setSidebarOnlyDoorHint: "This host keeps the market out of Settings, so this row is the way in.",
 			setSidebarOn: "Show",
 			setSidebarOff: "Hide",
 			sidebarTip: "Want a quicker open? Show it in the sidebar.",
@@ -15163,7 +15165,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			const [open, setOpen] = (0, react.useState)(false);
 			const [sidebarState, setSidebarState] = (0, react.useState)(() => ({
 				supported: sidebar?.supported() === true,
-				enabled: sidebar?.enabled() === true
+				enabled: sidebar?.enabled() === true,
+				onlyDoor: sidebar?.onlyDoor() === true
 			}));
 			const [sidebarSaving, setSidebarSaving] = (0, react.useState)(false);
 			(0, react.useEffect)(() => {
@@ -15171,7 +15174,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				const sync = () => {
 					setSidebarState({
 						supported: sidebar.supported(),
-						enabled: sidebar.enabled()
+						enabled: sidebar.enabled(),
+						onlyDoor: sidebar.onlyDoor()
 					});
 				};
 				sync();
@@ -15430,7 +15434,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			}, [sidebar]);
 			/** One label + hint block with an optional action, the host's row shape. */
 			const row = (label, hint, action) => (0, react.createElement)("div", { className: Market_module_css_default.setRow }, (0, react.createElement)("div", { className: Market_module_css_default.setLabelBox }, (0, react.createElement)("div", { className: Market_module_css_default.setLabel }, label), (0, react.createElement)("div", { className: Market_module_css_default.setHint }, hint)), action);
-			const body = phase === "removed" ? row(t("setSelfRemoved"), t("setSelfRemovedHint"), null) : (0, react.createElement)(react.Fragment, null, sidebarState.supported ? row(t("setSidebar"), t("setSidebarHint"), (0, react.createElement)("div", { className: Market_module_css_default.setSeg }, [false, true].map((on) => (0, react.createElement)("button", {
+			const body = phase === "removed" ? row(t("setSelfRemoved"), t("setSelfRemovedHint"), null) : (0, react.createElement)(react.Fragment, null, sidebarState.supported ? row(t("setSidebar"), t(sidebarState.onlyDoor ? "setSidebarOnlyDoorHint" : "setSidebarHint"), (0, react.createElement)("div", { className: Market_module_css_default.setSeg }, [false, true].map((on) => (0, react.createElement)("button", {
 				key: String(on),
 				type: "button",
 				className: sidebarState.enabled === on ? `${Market_module_css_default.setSegBtn} ${Market_module_css_default.setSegOn}` : Market_module_css_default.setSegBtn,
@@ -15743,19 +15747,27 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 		*/
 		/** The `main` key and `sidebar.panellist` id this package registers. */
 		const SIDEBAR_PANEL_ID = "dsh-market";
-		function createSidebarEntry({ gate, fetch }) {
+		function createSidebarEntry({ gate, fetch, hasOtherSeat }) {
+			const otherSeat = hasOtherSeat ?? (() => true);
 			let supported = false;
 			let enabled = false;
 			let ready = false;
+			/** The user has ever answered; an absent choice is not an "off". */
+			let chosen = false;
 			/** Bumped by every `set` so a slow initial `load` cannot overwrite it. */
 			let epoch = 0;
 			const listeners = /* @__PURE__ */ new Set();
 			const notify = () => {
 				for (const listener of listeners) listener();
 			};
-			const accept = (next) => {
-				enabled = next;
-				gate.setVisible(next);
+			/**
+			* One place that answers "is the row shown": the user's own choice wins;
+			* with no choice on record, the row is shown exactly when it is the only
+			* way into the market.
+			*/
+			const decide = () => {
+				if (!supported) return;
+				gate.setVisible(enabled || !chosen && !otherSeat());
 				notify();
 			};
 			const settle = () => {
@@ -15767,6 +15779,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				supported: () => supported,
 				enabled: () => enabled,
 				ready: () => ready,
+				onlyDoor: () => !otherSeat(),
 				subscribe: (listener) => {
 					listeners.add(listener);
 					return () => {
@@ -15776,7 +15789,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				markSupported: () => {
 					supported = true;
 					gate.available();
-					notify();
+					decide();
+				},
+				refresh: () => {
+					decide();
 				},
 				load: async () => {
 					const at = epoch;
@@ -15784,7 +15800,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 						const response = await fetch(api("/dsh-market/sidebar-entry"), { cache: "no-store" });
 						if (response.ok) {
 							const body = await response.json();
-							if (at === epoch) accept(body.enabled === true);
+							if (at === epoch) {
+								enabled = body.enabled === true;
+								chosen = body.chosen === true;
+								decide();
+							}
 						}
 					} catch {} finally {
 						settle();
@@ -15804,7 +15824,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 						throw new Error(`sidebar entry: HTTP ${response.status}`);
 					}
 					if (body.ok !== true || typeof body.enabled !== "boolean") throw new Error(body.error ?? `sidebar entry: HTTP ${response.status}`);
-					if (at === epoch) accept(body.enabled);
+					if (at === epoch) {
+						enabled = body.enabled;
+						chosen = true;
+						decide();
+					}
 					settle();
 					return body.enabled;
 				}
@@ -15919,8 +15943,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				}));
 				return typeof off === "function" ? off : () => {};
 			});
+			let settingsSeat = false;
 			ctx.slots.inject("settings.section", () => {
+				settingsSeat = true;
 				sectionGate.available();
+				sidebar?.refresh();
 			});
 			let layout;
 			const sidebarGate = createSectionGate(() => {
@@ -15945,12 +15972,16 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			}, false);
 			sidebar = createSidebarEntry({
 				gate: sidebarGate,
-				fetch: (...args) => fetch(...args)
+				fetch: (...args) => fetch(...args),
+				hasOtherSeat: () => settingsSeat
 			});
 			sidebar.load();
 			ctx.slots.inject("sidebar.panellist", () => {
-				sidebar.markSupported();
+				sidebar?.markSupported();
 			});
+			setTimeout(() => {
+				sidebar?.refresh();
+			}, 0);
 			ctx.inject(["layout"], (scoped) => {
 				layout = scoped.layout;
 			});

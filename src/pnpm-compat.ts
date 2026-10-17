@@ -50,6 +50,7 @@ export interface PnpmFailure {
     | 'unexpected-store' | 'patch-failed' | 'unused-patch' | 'missing-tarball-integrity' | 'windows-file-locked'
     | 'profile-file-locked'
     | 'pnpm-unusable' | 'missing-local-dependency' | 'unparseable-build-key' | 'native-oom' | 'ssh-auth-failed'
+    | 'host-incompatible-install'
     | 'lockfile-broken' | 'lockfile-outdated' | 'pnpm-stalled'
   /** Bilingual, actionable message shown to the user instead of the raw wall of text. */
   message: string
@@ -424,6 +425,20 @@ export function classifyPnpmFailure(output: string, exitCode?: number | null): P
       code: 'release-age-violation',
       recoverable: false,
       message: '这个 profile 里有一个刚发布不久的插件版本，pnpm 的安全等待期检查因此拒绝了本次改动（即使改的是别的插件）。市场已自动放行重试一次；若仍看到本条，请导出日志反馈 / a recently-published plugin version in this profile trips pnpm\'s fresh-release safety check, blocking any change (even to other plugins); the market retries once with a one-shot bypass — if you still see this, export the log and report it',
+    }
+  }
+  // DSH 0.2.1 enforces the compatibility gate ITSELF, at install time, in the
+  // CLI — so the market's own "you insisted, go ahead" path no longer
+  // overrides it: the command exits 1 with `dsh: installation rejected:` and
+  // names an exact-version exemption the user can grant. Before this branch
+  // that wall of text was what the update dialog showed, and it read like a
+  // market failure (#404's question, answered by the host).
+  if (output.includes('dsh: installation rejected:') && /is incompatible with dsh \d/.test(output)) {
+    const requirement = /requirements (\{[^}]*\})/.exec(output)?.[1] ?? ''
+    return {
+      code: 'host-incompatible-install',
+      recoverable: false,
+      message: `这个版本要求的 DSH 比当前运行的新，宿主在安装时自己拒绝了${requirement === '' ? '' : `（它声明的需求：${requirement}）`}。换一个兼容的版本即可；确实要装这一个，需要先在宿主的插件管理器（或 dsh 的 allow-version）里为这个具体版本授权，再重试 / this release needs a newer DSH than the one running, and the HOST refused the install itself${requirement === '' ? '' : ` (it declares ${requirement})`} — not the market's check. Pick a compatible version; to install this exact one anyway, grant the host's exact-version exemption for it first (plugin manager, or dsh's allow-version) and retry`,
     }
   }
   // #69: pnpm >= 10 blocks dependency build scripts by default. The install

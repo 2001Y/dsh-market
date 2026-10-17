@@ -11,7 +11,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { createSectionGate } from '../../src/client/section-gate.ts'
 import { createSidebarEntry } from '../../src/client/sidebar-entry.ts'
 
-function harness(answer: (init?: RequestInit) => { status?: number; body: unknown }) {
+function harness(
+  answer: (init?: RequestInit) => { status?: number; body: unknown },
+  options: { hasOtherSeat?: () => boolean } = {},
+) {
   let live = 0
   const gate = createSectionGate(() => {
     live += 1
@@ -23,7 +26,7 @@ function harness(answer: (init?: RequestInit) => { status?: number; body: unknow
     const { status = 200, body } = answer(init)
     return new Response(JSON.stringify(body), { status })
   }) as unknown as typeof globalThis.fetch
-  const entry = createSidebarEntry({ gate, fetch })
+  const entry = createSidebarEntry({ gate, fetch, ...(options.hasOtherSeat === undefined ? {} : { hasOtherSeat: options.hasOtherSeat }) })
   return { entry, calls, live: () => live }
 }
 
@@ -146,5 +149,84 @@ describe('createSidebarEntry', () => {
     await loading
     expect(entry.enabled()).toBe(true)
     expect(live).toBe(1)
+  })
+})
+
+/**
+ * DSH 0.2.1 removed the settings dialog: the Plugins page carries the market's
+ * CARD, and the sidebar row is the only way into the market itself. Off by
+ * default then means unreachable, so on such a host the row is shown unless
+ * the user has actually said no (#846).
+ */
+describe('a host whose only entry is this row (#846 on DSH 0.2.1+)', () => {
+  it('shows the row with no saved choice at all', async () => {
+    const { entry, live } = harness(
+      () => ({ body: { enabled: false, chosen: false } }),
+      { hasOtherSeat: () => false },
+    )
+    entry.markSupported()
+    await entry.load()
+    expect(entry.onlyDoor()).toBe(true)
+    expect(live()).toBe(1)
+  })
+
+  it('honours a deliberate off, because that is how the user turns it off there', async () => {
+    const { entry, live } = harness(
+      () => ({ body: { enabled: false, chosen: true } }),
+      { hasOtherSeat: () => false },
+    )
+    entry.markSupported()
+    await entry.load()
+    expect(live()).toBe(0)
+  })
+
+  it('keeps the row when the saved choice is on', async () => {
+    const { entry, live } = harness(
+      () => ({ body: { enabled: true, chosen: true } }),
+      { hasOtherSeat: () => false },
+    )
+    entry.markSupported()
+    await entry.load()
+    expect(live()).toBe(1)
+  })
+
+  it('does not make a settings-page host opt-out', async () => {
+    // The old default stays the default wherever the market still has its
+    // usual seat: this change is about reachability, not about showing the
+    // row to everyone.
+    const { entry, live } = harness(() => ({ body: { enabled: false, chosen: false } }))
+    entry.markSupported()
+    await entry.load()
+    expect(entry.onlyDoor()).toBe(false)
+    expect(live()).toBe(0)
+  })
+
+  it('withdraws the row when the host turns out to have a settings page after all', async () => {
+    // The seat question is answered by a slot injection that may land after
+    // setup; refresh() re-answers it instead of freezing the first guess.
+    let otherSeat = false
+    const { entry, live } = harness(
+      () => ({ body: { enabled: false, chosen: false } }),
+      { hasOtherSeat: () => otherSeat },
+    )
+    entry.markSupported()
+    await entry.load()
+    expect(live()).toBe(1)
+    otherSeat = true
+    entry.refresh()
+    expect(entry.onlyDoor()).toBe(false)
+    expect(live()).toBe(0)
+  })
+
+  it('turns the row off for good once the user says so', async () => {
+    const { entry, live } = harness(
+      (init) => ({ body: init?.method === 'POST' ? { ok: true, enabled: false } : { enabled: true, chosen: false } }),
+      { hasOtherSeat: () => false },
+    )
+    entry.markSupported()
+    await entry.load()
+    expect(live()).toBe(1)
+    await entry.set(false)
+    expect(live()).toBe(0)
   })
 })

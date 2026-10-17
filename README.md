@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 [![npm](https://img.shields.io/npm/v/dshmarket)](https://www.npmjs.com/package/dshmarket)
 [![stars](https://img.shields.io/github/stars/dsh-market/dsh-market?style=flat)](https://github.com/dsh-market/dsh-market)
 
-The plugin market inside DeepSeek Harness. Open Settings → **Plugin Market** → browse, search, one-click install.
+The plugin market inside DeepSeek Harness. Open Settings → **Plugin Market** → browse, search, one-click install. Settings sits in the sidebar up to dsh 0.2.0 and in the account menu from 0.2.1.
 
 ![dsh-market](assets/demo-en.png)
 
@@ -21,7 +21,11 @@ One-click themes: install, switch live, no restart.
 dsh plugin --profile web add dshmarket
 ```
 
-Restart `dsh web`, then open **Settings → Plugin Market**.
+Restart `dsh web`, then open **Settings → Plugin Market**. From dsh 0.2.1 the
+Settings dialog moved into the account menu (the sidebar has no Settings
+button), and the market is still a section there. If you would rather reach it
+in one click, the market can also put its own **Plugin Market** row in the
+sidebar; turn it on from the market's card under **Plugins**.
 
 A host that runs under another profile name takes the same command with that
 name instead — `dsh plugin --profile <profile> add dshmarket`. On the official
@@ -56,7 +60,7 @@ its own dsh: it may be older than the one `npm` would give you (#139).
 - **Recovery when a restart does not come back** — DSH's boot is all-or-nothing: one plugin that cannot load stops the whole process, and the market's own UI dies with the host it was serving from. Now that failure prompt offers **Adjust plugins**: the ones DSH blamed are marked red and left unticked, you choose what should be enabled at the next start, the choice is written through the same `cordis.patch.yml` rows the market's own toggles use (plus `dsh.profile.bundles` for a disable-carrier), and the boot is retried. It is served by the detached restart helper on the same address the page was already polling, so it works even though the host is gone — and opening the URL fresh renders a standalone version of the same page. When DSH starts normally, none of it appears
 - **Zero jargon** — if a component is missing (pnpm), the market detects it and offers a one-click automatic setup
 - **Log export** — one click produces a sanitized plain-text log for bug reports (home paths and credential shapes are masked; nothing is ever sent anywhere). The market's version sits next to the page heading, so a screenshot of a problem already carries it
-- **Settings card** — on dsh 0.1.0-rc.7 and newer the market manages *itself* from **Settings → Plugins → Plugin configuration**, next to every other plugin: see the running version, pick a **release channel** (stable, or beta to try builds still being verified — the market only, never your other plugins; a third *dev* channel appears once developer mode is switched on, and carries builds published straight off a branch), update, or remove the market — with an opt-in cleanup that also drops the disable rows it wrote, so plugins it switched off start running again rather than staying off with no UI left to switch them back on
+- **Settings card** — on dsh 0.1.0-rc.7 and newer the market manages *itself* next to every other plugin — under **Settings → Plugins → Plugin configuration** while the host still has a Settings page, and on the market's own card on the **Plugins** page from dsh 0.2.1, where Settings is gone: see the running version, pick a **release channel** (stable, or beta to try builds still being verified — the market only, never your other plugins; a third *dev* channel appears once developer mode is switched on, and carries builds published straight off a branch), update, or remove the market — with an opt-in cleanup that also drops the disable rows it wrote, so plugins it switched off start running again rather than staying off with no UI left to switch them back on
 - **Diagnostics** — the plugin load order and conflict surface, one page: bundle stack with official/community badges, duplicate loader entries, dependency version mismatches, multi-version core packages, overrides and invalid config entries, and leftover directories — a package directory an interrupted update left without its `package.json`, and pnpm's own `*_tmp_*` staging directories. Nothing there stops a start, so it is listed rather than warned about, and it is the only place that names what is on disk. Plain-language terms, problem blocks highlighted, everything collapsible
 
 - **Load order** — drag community bundles into the order you want, or take the suggested one derived from the plugins' own before/after rules. Nothing is written until a trial composition passes, and the panel tells you what the new order would change (overrides, invalid or duplicate entries) before you apply it

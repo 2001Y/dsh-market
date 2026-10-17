@@ -404,9 +404,13 @@ describe('a partial write must not erase the rest of the state (#435)', () => {
       writeMarketState(dir, { disabled: new Set(['dsh-loop']), groups: {}, groupOrder: [] })
       expect(readMarketState(dir).sidebarEntry).toBe(true)
 
+      // Turning it off is a CHOICE, not an empty field: on a host with no
+      // settings page this row is the only way into the market, so a later
+      // read must not take "off" for "never asked" and put the row back
+      // (#846 on DSH 0.2.1+).
       writeMarketState(dir, { ...readMarketState(dir), sidebarEntry: false })
-      expect(readMarketState(dir).sidebarEntry).toBeUndefined()
-      expect('sidebarEntry' in readRaw(dir)).toBe(false)
+      expect(readMarketState(dir).sidebarEntry).toBe(false)
+      expect(readRaw(dir).sidebarEntry).toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

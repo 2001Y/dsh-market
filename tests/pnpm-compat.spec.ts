@@ -38,6 +38,30 @@ describe('pluginArgsFor', () => {
 })
 
 describe('classifyPnpmFailure', () => {
+  it("names the host's own install rejection instead of passing it through (DSH 0.2.1+)", () => {
+    // Captured from dsh 0.2.1-rc.1 by installing a release that declares
+    // `engines.dsh: >=99.0.0` with the market's force flag. The host enforces
+    // the gate itself now, so "the user insisted" is answered by the CLI —
+    // and what reached the dialog before this branch was this wall of text.
+    const output = [
+      'dsh: installation rejected: Plugin dshm-e2e-fixture-a@2.0.0 is incompatible with dsh 0.2.1-rc.1:',
+      ' requirements {"engines.dsh":">=99.0.0"}. Running it may cause crashes or data loss.',
+      ' Update the plugin or install a plugin version compatible with this dsh runtime.',
+      ' To accept this risk explicitly, grant the exact-version exemption for',
+      ' dshm-e2e-fixture-a@2.0.0 on dsh 0.2.1-rc.1 with `dsh plugin allow-version` or the plugin manager,',
+      ' then retry the installation or restart dsh. Exact-version exemption: not active.',
+    ].join('')
+    const failure = classifyPnpmFailure(output)
+    expect(failure?.code).toBe('host-incompatible-install')
+    expect(failure?.recoverable).toBe(false)
+    // What happened, why, and the way out — including the host's own exemption.
+    expect(failure?.message).toContain('宿主')
+    expect(failure?.message).toContain('allow-version')
+    expect(failure?.message).toContain('>=99.0.0')
+    // A plain market-side failure must not be swallowed by this branch.
+    expect(classifyPnpmFailure('ERR_PNPM_FETCH_404 GET https://registry/x: Not Found')?.code).not.toBe('host-incompatible-install')
+  })
+
   it('maps each known pnpm failure signature, and only those', () => {
     const hoist = classifyPnpmFailure('ERR_PNPM_PUBLIC_HOIST_PATTERN_DIFF  This modules directory was created using a different public-hoist-pattern value. Run "pnpm install" to recreate the modules directory.')
     expect(hoist?.code).toBe('hoist-pattern-diff')

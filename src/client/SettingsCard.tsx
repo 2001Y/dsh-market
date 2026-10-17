@@ -226,11 +226,12 @@ export function SettingsCard({ t, onRemoved, sidebar }: SettingsCardProps): Reac
   const [sidebarState, setSidebarState] = useState(() => ({
     supported: sidebar?.supported() === true,
     enabled: sidebar?.enabled() === true,
+    onlyDoor: sidebar?.onlyDoor() === true,
   }))
   const [sidebarSaving, setSidebarSaving] = useState(false)
   useEffect(() => {
     if (sidebar === undefined) return undefined
-    const sync = (): void => { setSidebarState({ supported: sidebar.supported(), enabled: sidebar.enabled() }) }
+    const sync = (): void => { setSidebarState({ supported: sidebar.supported(), enabled: sidebar.enabled(), onlyDoor: sidebar.onlyDoor() }) }
     sync()
     return sidebar.subscribe(sync)
   }, [sidebar])
@@ -494,7 +495,7 @@ export function SettingsCard({ t, onRemoved, sidebar }: SettingsCardProps): Reac
         // findable after the market-page tip is dismissed. Only on a host
         // with sidebar panels — elsewhere the switch would promise a row
         // that has nowhere to appear.
-        sidebarState.supported ? row(t('setSidebar'), t('setSidebarHint'),
+        sidebarState.supported ? row(t('setSidebar'), t(sidebarState.onlyDoor ? 'setSidebarOnlyDoorHint' : 'setSidebarHint'),
           h('div', { className: css.setSeg },
             ([false, true] as const).map(on => h('button', {
               key: String(on),

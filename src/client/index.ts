@@ -213,7 +213,18 @@ function mountMarket(ctx: MarketClientContext): void {
     return typeof off === 'function' ? off as () => void : () => {}
   })
 
-  ctx.slots.inject('settings.section', () => { sectionGate.available() })
+  // Whether the host offers a settings page at all. dsh 0.2.1 moved the
+  // Settings dialog into the account menu, but the section slot still
+  // arrives and the market still renders there. Detection is the slot, as
+  // everywhere else here, and `refresh()` re-answers when it arrives: a host
+  // that declares sidebar panels without serving a settings section would
+  // otherwise leave the market with no door but the row (#846).
+  let settingsSeat = false
+  ctx.slots.inject('settings.section', () => {
+    settingsSeat = true
+    sectionGate.available()
+    sidebar?.refresh()
+  })
 
   // The opt-in sidebar row (#846). Registered only while the user has it on
   // AND the host declares sidebar panels; see sidebar-entry.ts.
@@ -240,9 +251,17 @@ function mountMarket(ctx: MarketClientContext): void {
       if (typeof offPanel === 'function') (offPanel as () => void)()
     }
   }, false)
-  sidebar = createSidebarEntry({ gate: sidebarGate, fetch: (...args) => fetch(...args) })
+  sidebar = createSidebarEntry({
+    gate: sidebarGate,
+    fetch: (...args) => fetch(...args),
+    hasOtherSeat: () => settingsSeat,
+  })
   void sidebar.load()
-  ctx.slots.inject('sidebar.panellist', () => { sidebar.markSupported() })
+  ctx.slots.inject('sidebar.panellist', () => { sidebar?.markSupported() })
+  // The slot injections above either fire synchronously (the host declares the
+  // slot) or never; this re-answers once the setup pass is over so a host with
+  // no settings page shows the row without waiting for the server round trip.
+  setTimeout(() => { sidebar?.refresh() }, 0)
   ;(ctx as unknown as { inject(services: string[], callback: (scoped: { layout: LayoutService }) => void): void })
     .inject(['layout'], (scoped) => { layout = scoped.layout })
   const retire = (): void => {

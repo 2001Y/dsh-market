@@ -4,7 +4,7 @@
  */
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { dshAvailable, launchMarketScaffold, openMarketPage } from './scaffold.ts'
+import { dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi } from './scaffold.ts'
 import type { WebScaffold } from './scaffold.ts'
 
 describe.skipIf(!dshAvailable())('web e2e: category chip order stays put', () => {
@@ -22,8 +22,7 @@ describe.skipIf(!dshAvailable())('web e2e: category chip order stays put', () =>
   afterAll(async () => { await browser?.close(); await s?.close() })
 
   it('leaves an already-visible chip where it was; still rescues a hidden one', async () => {
-    await page.getByRole('button', { name: /^(设置|Settings)$/ }).first().click()
-    await page.getByRole('button', { name: /插件市场|Plugin Market/ }).click()
+    await openMarketUi(page)
     await page.waitForSelector('[class*="masonryCol"] [class*="card"]', { timeout: 60_000 })
 
     const chipTexts = async (): Promise<string[]> =>

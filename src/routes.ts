@@ -5330,7 +5330,13 @@ sendJson(response, 200, { updates })
       path: '/dsh-market/sidebar-entry',
       handler: async (request, response) => {
         if (request.method === 'GET') {
-          sendJson(response, 200, { enabled: marketState.sidebarEntry === true })
+          sendJson(response, 200, {
+            enabled: marketState.sidebarEntry === true,
+            // Absent means nobody has ever chosen. On a host with no settings
+            // page the row is then shown by default, because it is the only
+            // way into the market (#846).
+            chosen: typeof marketState.sidebarEntry === 'boolean',
+          })
           return
         }
         if (request.method !== 'POST') {

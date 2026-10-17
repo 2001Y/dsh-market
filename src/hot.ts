@@ -531,7 +531,10 @@ export function readMarketState(profileDir: string): MarketState {
       updateExempt: updateExemptNames(state.updateExempt),
       ...(githubProxy === null ? {} : { githubProxy }),
       ...(brokenPlugins === undefined ? {} : { brokenPlugins }),
-      ...(state.sidebarEntry === true ? { sidebarEntry: true } : {}),
+      // true AND false are both preserved: on a host with no settings page
+      // this switch is the market's only entry, so "the user turned it off"
+      // must be distinguishable from "nobody has chosen yet" (#846).
+      ...(typeof state.sidebarEntry === 'boolean' ? { sidebarEntry: state.sidebarEntry } : {}),
       buildEnv: buildEnvFromUnknown(state.buildEnv),
     }
   } catch (error) {
@@ -651,8 +654,10 @@ export function writeMarketState(profileDir: string, state: MarketState): void {
     // githubProxy above, and the one a repaired plugin needs: the entry
     // exists only while the declaration is still missing.
     ...(broken === undefined ? {} : { brokenPlugins: broken }),
-    // Written only while on: off and never-chosen are the same answer.
-    ...(sidebarEntry === true ? { sidebarEntry: true } : {}),
+    // Written for both answers: on a host with no settings page this switch
+    // is the market's only entry, so a deliberate OFF has to survive a reload
+    // instead of being read back as "never chosen" (#846).
+    ...(typeof sidebarEntry === 'boolean' ? { sidebarEntry } : {}),
     ...(state.region === undefined ? {} : { region: state.region }),
     ...(state.regionAuto === true ? { regionAuto: true } : {}),
     // Omitted while not saved, so a card that was never touched keeps

@@ -372,6 +372,46 @@ export async function openMarketPage(
   }
 }
 
+/**
+ * Get to the market screen, whichever door this host version has.
+ *
+ * Up to 0.2.0 it is a section of the Settings dialog. DSH 0.2.1 removed that
+ * dialog: the Plugins page carries the market's settings CARD, and the market
+ * page opens from the sidebar row (#846), off by default — so this turns it
+ * on the way a user would.
+ *
+ * Also clears 0.2.1's "Get started" gate: it covers the whole app on a fresh
+ * profile, Escape does not close it, and every click behind it is swallowed.
+ */
+export async function dismissStartGate(page: Page): Promise<void> {
+  for (let round = 0; round < 3; round++) {
+    const close = page.getByRole('button', { name: /^(Close|关闭)$/ }).first()
+    try {
+      await close.waitFor({ timeout: round === 0 ? 2000 : 800 })
+      await close.click()
+    } catch { break }
+  }
+}
+
+export async function openMarketUi(page: Page): Promise<void> {
+  await dismissStartGate(page)
+  const settings = page.getByRole('button', { name: /^(设置|Settings)$/ }).first()
+  if (await settings.isVisible().catch(() => false)) {
+    await settings.click()
+  } else {
+    // dsh 0.2.1 moved Settings off the sidebar into the account menu
+    // (`Settings ⌥⌘,`); the dialog and its Plugin Market section are the same.
+    await page.getByRole('button', { name: /^(Account menu|账户菜单)$/ }).first().click()
+    await page.getByRole('menuitem', { name: /^(设置|Settings)/ }).first().click()
+  }
+  // The section lives inside the Settings dialog. Scope to it: an earlier
+  // market instance can still be in the page underneath, and its controls sit
+  // behind the dialog's mask, where a click never lands.
+  const dialog = page.getByRole('dialog')
+  const scope = (await dialog.count()) > 0 ? dialog.first() : page
+  await scope.getByRole('button', { name: /插件市场|Plugin Market/ }).first().click()
+}
+
 export interface ScaffoldOptions {
   /**
    * Fixture directories under `tests/web/fixtures` to publish to a local

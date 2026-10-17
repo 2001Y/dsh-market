@@ -379,7 +379,7 @@ describe('SettingsCard — channels', () => {
 
 describe('SettingsCard — sidebar shortcut (#846)', () => {
   /** A stand-in controller: the card's contract is with this, not with fetch. */
-  function fakeSidebar(options: { supported: boolean; enabled?: boolean; refuse?: string }): SidebarEntry & { sets: boolean[]; support(): void } {
+  function fakeSidebar(options: { supported: boolean; enabled?: boolean; refuse?: string; onlyDoor?: boolean }): SidebarEntry & { sets: boolean[]; support(): void } {
     let supported = options.supported
     let enabled = options.enabled === true
     const listeners = new Set<() => void>()
@@ -389,6 +389,8 @@ describe('SettingsCard — sidebar shortcut (#846)', () => {
       supported: () => supported,
       enabled: () => enabled,
       ready: () => true,
+      onlyDoor: () => options.onlyDoor === true,
+      refresh: () => {},
       subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
       markSupported: () => {},
       load: async () => {},

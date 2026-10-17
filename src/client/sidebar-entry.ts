@@ -43,6 +43,16 @@ export interface SidebarEntry {
    */
   ready(): boolean
   /**
+   * True when the host offers no settings section at all, so this row is the
+   * market's ONLY entry. The row is then shown by default — a default that
+   * leaves the market unreachable is not a default, it is a missing feature —
+   * and the card says so instead of promising a Settings entry that does not
+   * exist. On the hosts that ship today the section is always there (dsh
+   * 0.2.1 kept it and moved Settings into the account menu), so this stays a
+   * guard rather than a branch users see (#846).
+   */
+  onlyDoor(): boolean
+  /**
    * Persist the choice, then show or hide the row.
    * @returns the value the server accepted.
    */
@@ -51,6 +61,8 @@ export interface SidebarEntry {
   subscribe(listener: () => void): () => void
   /** The slot exists: the gate may register now. */
   markSupported(): void
+  /** Re-answer "is the row shown" after the host's seat set is known/changed. */
+  refresh(): void
   /** Read the saved choice once at page load. */
   load(): Promise<void>
 }
@@ -58,20 +70,37 @@ export interface SidebarEntry {
 interface Deps {
   gate: SectionGate
   fetch: typeof globalThis.fetch
+  /**
+   * Whether the host offers the market somewhere ELSE — the settings page
+   * this package registers as `settings.section`. Read live rather than
+   * captured, because it is answered by the same slot injection that makes
+   * the rest of the client work, and a host may declare it late.
+   */
+  hasOtherSeat?: () => boolean
 }
 
-export function createSidebarEntry({ gate, fetch }: Deps): SidebarEntry {
+export function createSidebarEntry({ gate, fetch, hasOtherSeat }: Deps): SidebarEntry {
+  // A host that says nothing is assumed to offer the usual settings page; only
+  // the one that reports the slot missing changes the default.
+  const otherSeat = hasOtherSeat ?? ((): boolean => true)
   let supported = false
   let enabled = false
   let ready = false
+  /** The user has ever answered; an absent choice is not an "off". */
+  let chosen = false
   /** Bumped by every `set` so a slow initial `load` cannot overwrite it. */
   let epoch = 0
   const listeners = new Set<() => void>()
   const notify = (): void => { for (const listener of listeners) listener() }
 
-  const accept = (next: boolean): void => {
-    enabled = next
-    gate.setVisible(next)
+  /**
+   * One place that answers "is the row shown": the user's own choice wins;
+   * with no choice on record, the row is shown exactly when it is the only
+   * way into the market.
+   */
+  const decide = (): void => {
+    if (!supported) return
+    gate.setVisible(enabled || (!chosen && !otherSeat()))
     notify()
   }
 
@@ -85,6 +114,7 @@ export function createSidebarEntry({ gate, fetch }: Deps): SidebarEntry {
     supported: () => supported,
     enabled: () => enabled,
     ready: () => ready,
+    onlyDoor: () => !otherSeat(),
     subscribe: (listener) => {
       listeners.add(listener)
       return () => { listeners.delete(listener) }
@@ -92,20 +122,25 @@ export function createSidebarEntry({ gate, fetch }: Deps): SidebarEntry {
     markSupported: () => {
       supported = true
       gate.available()
-      notify()
+      decide()
     },
+    refresh: () => { decide() },
     load: async () => {
       const at = epoch
       try {
         const response = await fetch(api('/dsh-market/sidebar-entry'), { cache: 'no-store' })
         if (response.ok) {
-          const body = (await response.json()) as { enabled?: unknown }
+          const body = (await response.json()) as { enabled?: unknown; chosen?: unknown }
           // A POST that finished while we were in flight already owns the row.
-          if (at === epoch) accept(body.enabled === true)
+          if (at === epoch) {
+            enabled = body.enabled === true
+            chosen = body.chosen === true
+            decide()
+          }
         }
       } catch {
-        // No answer means no row: the default is off, and the settings
-        // entry is still there.
+        // No answer means no saved choice; whether that leaves the market
+        // unreachable is `decide()`'s question, not this one's.
       } finally {
         settle()
       }
@@ -127,7 +162,11 @@ export function createSidebarEntry({ gate, fetch }: Deps): SidebarEntry {
         throw new Error(body.error ?? `sidebar entry: HTTP ${response.status}`)
       }
       // A newer set() started after we did — let that one paint.
-      if (at === epoch) accept(body.enabled)
+      if (at === epoch) {
+        enabled = body.enabled
+        chosen = true
+        decide()
+      }
       // A choice the user just made is as settled as a finished load.
       settle()
       return body.enabled

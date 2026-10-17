@@ -630,7 +630,10 @@ vi.mock('../src/hot.ts', async (importOriginal) => ({
     disabled: hot.disabled, groups: hot.groups, groupOrder: hot.groupOrder,
     channel: hot.channel, region: hot.region, regionAuto: hot.regionAuto,
     githubProxy: hot.githubProxy,
-    ...(hot.sidebarEntry === true ? { sidebarEntry: true } : {}),
+    // Both answers are carried: "off" and "never chosen" are different
+    // answers since the row became the only way in on a host with no
+    // settings page (#846).
+    ...(typeof hot.sidebarEntry === 'boolean' ? { sidebarEntry: hot.sidebarEntry } : {}),
     notes: hot.notes, favorites: hot.favorites, blocked: hot.blocked,
     updateExempt: hot.updateExempt,
     buildEnv: hot.buildEnv,
@@ -648,7 +651,7 @@ vi.mock('../src/hot.ts', async (importOriginal) => ({
     updateExempt?: string[]
     buildEnv?: Record<string, string>
   }) => {
-    if (Object.prototype.hasOwnProperty.call(state, 'sidebarEntry')) hot.sidebarEntry = state.sidebarEntry === true ? true : undefined
+    if (Object.prototype.hasOwnProperty.call(state, 'sidebarEntry')) hot.sidebarEntry = state.sidebarEntry
     hot.disabled = new Set(state.disabled)
     hot.groups = state.groups
     hot.groupOrder = state.groupOrder
@@ -7576,8 +7579,11 @@ describe('self-uninstall — the market removing itself from its settings card',
 })
 
 describe('sidebar entry (#846)', () => {
-  it('is off until the user turns it on', async () => {
-    expect((await bed.dispatch('GET', '/dsh-market/sidebar-entry')).json).toEqual({ enabled: false })
+  it('is off until the user turns it on, and says nobody has chosen', async () => {
+    // `chosen` is what lets the client tell "never asked" from "said no":
+    // on a host with no settings page the row is shown by default, and a
+    // deliberate off has to survive (#846 on DSH 0.2.1+).
+    expect((await bed.dispatch('GET', '/dsh-market/sidebar-entry')).json).toEqual({ enabled: false, chosen: false })
     expect((await bed.dispatch('GET', '/dsh-market/status')).json.sidebarEntry).toBe(false)
   })
 
@@ -7586,12 +7592,15 @@ describe('sidebar entry (#846)', () => {
     expect(on.status).toBe(200)
     expect(on.json).toEqual({ ok: true, enabled: true })
     expect(hot.sidebarEntry).toBe(true)
-    expect((await bed.dispatch('GET', '/dsh-market/sidebar-entry')).json).toEqual({ enabled: true })
+    expect((await bed.dispatch('GET', '/dsh-market/sidebar-entry')).json).toEqual({ enabled: true, chosen: true })
     expect((await bed.dispatch('GET', '/dsh-market/status')).json.sidebarEntry).toBe(true)
 
     const off = await bed.dispatch('POST', '/dsh-market/sidebar-entry', { enabled: false })
     expect(off.json).toEqual({ ok: true, enabled: false })
-    expect(hot.sidebarEntry).toBeUndefined()
+    // Recorded as a choice, not as an empty field: off and never-chosen are
+    // different answers on a host where this row is the only way in.
+    expect(hot.sidebarEntry).toBe(false)
+    expect((await bed.dispatch('GET', '/dsh-market/sidebar-entry')).json).toEqual({ enabled: false, chosen: true })
   })
 
   it('is not put back by a later write from the long-lived state (#435)', async () => {
@@ -7599,7 +7608,9 @@ describe('sidebar entry (#846)', () => {
     await bed.dispatch('POST', '/dsh-market/sidebar-entry', { enabled: false })
     // Any other route that writes the whole state object.
     expect((await bed.dispatch('POST', '/dsh-market/region', { region: 'china' })).status).toBe(200)
-    expect(hot.sidebarEntry).toBeUndefined()
+    // Still the user's OFF, not a blank field a later read would take for
+    // "never chosen" (#846).
+    expect(hot.sidebarEntry).toBe(false)
   })
 
   it('rejects anything but a boolean, and other origins', async () => {

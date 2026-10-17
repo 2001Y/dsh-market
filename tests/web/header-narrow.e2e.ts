@@ -15,7 +15,7 @@
 import { chromium } from 'playwright'
 import type { Browser, Page } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { dshAvailable, launchMarketScaffold, openMarketPage } from './scaffold.ts'
+import { dshAvailable, launchMarketScaffold, openMarketPage, openMarketUi } from './scaffold.ts'
 import type { WebScaffold } from './scaffold.ts'
 
 // `.sequential` like every other file in this suite: two market scaffolds at
@@ -36,8 +36,7 @@ describe.skipIf(!dshAvailable()).sequential('web e2e: the market header in a nar
       const b = page.getByRole('button', { name: /^(Continue|继续|Configure later|稍后配置)$/ }).first()
       try { await b.waitFor({ timeout: i === 0 ? 30_000 : 3000 }); await b.click() } catch { break }
     }
-    await page.getByRole('button', { name: /^(设置|Settings)$/ }).first().click()
-    await page.getByRole('button', { name: /插件市场|Plugin Market/ }).click()
+    await openMarketUi(page)
     await page.waitForSelector('[class*="masonryCol"] [class*="card"]', { timeout: 60_000 })
     await page.setViewportSize({ width: 640, height: 800 })
     await page.getByRole('button', { name: /插件市场|Plugin Market/ }).waitFor()
