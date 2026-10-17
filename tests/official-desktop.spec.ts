@@ -189,6 +189,55 @@ describe('official Electron profile runtime', () => {
     expect(result.stdout).toContain('another layer overrides')
   })
 
+  it('updates an installed plugin by removing it first when the manager says already-installed (#896)', async () => {
+    // dsh 0.2.1's manager refuses `add` for any package already in the
+    // profile. The app's own Plugins page updates a bundle as
+    // remove-then-install for the same reason; without that, the market could
+    // not update a single plugin on that host, itself included.
+    const service = manager()
+    service.installBundle
+      .mockResolvedValueOnce({ application: 'failed', error: { code: 'already-installed' }, packageResult: { exitCode: 1, output: '' } })
+      .mockResolvedValueOnce({ application: 'applied', packageResult: { exitCode: 0, output: 'installed 1.66.33' } })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    try {
+      await expect(runtime.runPlugin('desktop', ['add', 'dshmarket@1.66.33'])).resolves
+        .toMatchObject({ exitCode: 0, stdout: 'installed 1.66.33' })
+      expect(service.removeBundle).toHaveBeenCalledWith('dshmarket')
+      expect(service.installBundle).toHaveBeenCalledTimes(2)
+      expect(service.installBundle).toHaveBeenLastCalledWith('dshmarket@1.66.33', { requestId: expect.any(String) })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('keeps a scoped package name whole when reinstalling', async () => {
+    const service = manager()
+    service.installBundle
+      .mockResolvedValueOnce({ application: 'failed', error: { code: 'already-installed' }, packageResult: { exitCode: 1, output: '' } })
+      .mockResolvedValueOnce({ application: 'applied', packageResult: { exitCode: 0, output: 'ok' } })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    try {
+      await runtime.runPlugin('desktop', ['add', '@deepseek-ai/dsh-plugin-x@0.2.1'])
+      expect(service.removeBundle).toHaveBeenCalledWith('@deepseek-ai/dsh-plugin-x')
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('reports the removal when the reinstall cannot start', async () => {
+    const service = manager()
+    service.installBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'already-installed' }, packageResult: { exitCode: 1, output: '' } })
+    service.removeBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'bundle-in-use' }, packageResult: { exitCode: 1, output: '' } })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    try {
+      await expect(runtime.runPlugin('desktop', ['add', 'example@2.0.0'])).resolves
+        .toMatchObject({ exitCode: 1, stderr: '{"code":"bundle-in-use"}' })
+      expect(service.installBundle).toHaveBeenCalledTimes(1)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   it('maps manager failure without reporting success', async () => {
     const service = manager()
     service.installBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'network' }, packageResult: { exitCode: 1, output: '' } })

@@ -34,6 +34,55 @@ function detail(error: unknown): string {
   return JSON.stringify(error)
 }
 
+/** The manager's own refusal code, whether it was returned or thrown. */
+function managementCode(error: unknown): string | undefined {
+  const code = (error as { code?: unknown } | null | undefined)?.code
+  return typeof code === 'string' ? code : undefined
+}
+
+/** `dshmarket@1.66.32` → `dshmarket`; anything that is not a registry name stays unparsed. */
+export function registryNameOf(spec: string): string | undefined {
+  // Start at 1 so a scoped name's leading `@` is not mistaken for a version.
+  const at = spec.indexOf('@', 1)
+  const name = at === -1 ? spec : spec.slice(0, at)
+  return /^(@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9._~-]+$/.test(name) ? name : undefined
+}
+
+/**
+ * Install a spec, and when the manager refuses it because that package is
+ * already in the profile, remove the installed copy first and install again.
+ *
+ * dsh 0.2.1's plugin manager treats `add` on an existing dependency as
+ * `already-installed` outright (#896). An update is exactly that shape, and
+ * the app's own Plugins page updates a bundle the same two-step way —
+ * `removeBundle` then install — because its manager has no in-place update.
+ * Without this the market could not update ANY installed plugin on that host,
+ * itself included: users stuck on a broken build could not fetch the fix.
+ */
+async function installOrReinstall(
+  manager: OfficialPluginManagerLike,
+  spec: string,
+  options: { requestId?: string; registry?: string },
+): Promise<ManagedResult> {
+  const install = (): Promise<ManagedResult> => manager.installBundle(spec, options)
+  let first: ManagedResult
+  try {
+    first = await install()
+  } catch (error) {
+    if (managementCode(error) !== 'already-installed') throw error
+    first = { application: 'failed', error }
+  }
+  if (first.application !== 'failed' || managementCode(first.error) !== 'already-installed') return first
+  const name = registryNameOf(spec)
+  // A refusal we cannot turn into a name is the manager's answer to give.
+  if (name === undefined) return first
+  progress.lastLine = 'Removing the installed copy so the desktop app can install the new version'
+  const removed = await manager.removeBundle(name)
+  if (removed.application === 'failed' || removed.application === 'cancelled') return removed
+  progress.lastLine = 'Installing the new version'
+  return install()
+}
+
 /**
  * Never fall back to `dsh plugin --profile desktop`.
  *
@@ -107,9 +156,10 @@ export function createOfficialDesktopRuntime(
       // Read at each operation so region switches apply without a restart.
       // The default route leaves the host's own npm configuration in charge.
       const registry = routesFor(activeRegion()).npmRegistry
+      const options = { requestId, ...(registry === DEFAULT_NPM_REGISTRY ? {} : { registry }) }
       operation = command === 'remove'
         ? manager.removeBundle(target)
-        : manager.installBundle(spec, { requestId, ...(registry === DEFAULT_NPM_REGISTRY ? {} : { registry }) })
+        : installOrReinstall(manager, spec, options)
     } catch (error) {
       progress.active = false
       return Promise.resolve(failure(detail(error), 127))
