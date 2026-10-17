@@ -35,6 +35,8 @@ function detail(error: unknown): string {
   const copy = code === undefined ? undefined : REFUSAL_COPY[code]
   // The code stays on the line: it is what the log and the issue report carry.
   if (copy !== undefined) return `${copy.zh} / ${copy.en} (${code})`
+  const message = (error as { message?: unknown }).message
+  if (typeof message === 'string' && message !== '') return message
   return JSON.stringify(error)
 }
 
@@ -72,6 +74,29 @@ const REFUSAL_COPY: Record<string, { zh: string; en: string }> = {
     zh: '这个版本与当前 DSH 不兼容，宿主拒绝安装',
     en: 'this version is not compatible with the running DSH, so the host refused it',
   },
+}
+
+/**
+ * The market's own package names. A desktop profile installs it from npm as
+ * `dshmarket`; a fork or a local checkout can declare the repository's name.
+ */
+const SELF_NAMES = new Set(['dshmarket', 'dsh-market'])
+
+/**
+ * Why the market will not remove itself to update, and what to do instead.
+ *
+ * The manager's `removeBundle` drops the bundle from the running composition
+ * before pnpm runs. For every other package that is a normal unload; for the
+ * market it unloads the very code that was going to install the new version,
+ * so the reinstall never happens and the profile is left with the bundle row
+ * gone and the dependency still declared (#900). The app's own Plugins page
+ * performs the same two steps from outside the market and survives.
+ */
+function selfUpdateMessage(spec: string): string {
+  const at = spec.indexOf('@', 1)
+  const version = at === -1 ? '' : spec.slice(at + 1)
+  const target = version === '' ? spec : `${registryNameOf(spec) ?? spec}@${version}`
+  return `市场不能在自己的请求里先卸载自己：桌面端的移除会先把市场从正在运行的组合里摘掉，补装那一步就再也执行不到了（#900）。请在桌面端的「设置 → 插件」里更新市场${version === '' ? '' : ` 到 ${version}`}，或完全退出 DSH 后在终端执行 \`dsh plugin --profile desktop add ${target}\`。 / The market cannot remove itself to update: the desktop app unloads it from the running composition first, so the reinstall never runs (#900). Update it from the desktop app's Settings → Plugins${version === '' ? '' : ` (to ${version})`}, or quit DSH completely and run \`dsh plugin --profile desktop add ${target}\` in a terminal.`
 }
 
 /** The manager's own refusal code, whether it was returned or thrown. */
@@ -116,6 +141,11 @@ async function installOrReinstall(
   const name = registryNameOf(spec)
   // A refusal we cannot turn into a name is the manager's answer to give.
   if (name === undefined) return first
+  // Removing the market would unload this very code before the reinstall runs
+  // (#900). Say how to update it instead.
+  if (SELF_NAMES.has(name)) {
+    return { application: 'failed', error: { code: 'market-self-update', message: selfUpdateMessage(spec) } }
+  }
   progress.lastLine = 'Removing the installed copy so the desktop app can install the new version'
   const removed = await manager.removeBundle(name)
   if (removed.application === 'failed' || removed.application === 'cancelled') return removed

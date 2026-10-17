@@ -200,11 +200,31 @@ describe('official Electron profile runtime', () => {
       .mockResolvedValueOnce({ application: 'applied', packageResult: { exitCode: 0, output: 'installed 1.66.33' } })
     const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
     try {
-      await expect(runtime.runPlugin('desktop', ['add', 'dshmarket@1.66.33'])).resolves
+      await expect(runtime.runPlugin('desktop', ['add', 'example@2.0.0'])).resolves
         .toMatchObject({ exitCode: 0, stdout: 'installed 1.66.33' })
-      expect(service.removeBundle).toHaveBeenCalledWith('dshmarket')
+      expect(service.removeBundle).toHaveBeenCalledWith('example')
       expect(service.installBundle).toHaveBeenCalledTimes(2)
-      expect(service.installBundle).toHaveBeenLastCalledWith('dshmarket@1.66.33', { requestId: expect.any(String) })
+      expect(service.installBundle).toHaveBeenLastCalledWith('example@2.0.0', { requestId: expect.any(String) })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it.each(['dshmarket@1.66.36', 'dsh-market@1.66.36'])('never removes the market itself to update it (%s, #900)', async spec => {
+    // The manager's removal unloads the bundle from the running composition
+    // BEFORE pnpm runs. For the market that is the code performing the update,
+    // so the reinstall never happens and the profile is left half-removed.
+    const service = manager()
+    service.installBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'already-installed' } })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    try {
+      const result = await runtime.runPlugin('desktop', ['add', spec])
+      expect(result.exitCode).not.toBe(0)
+      expect(result.wroteNothing).toBe(true)
+      expect(service.removeBundle).not.toHaveBeenCalled()
+      expect(service.installBundle).toHaveBeenCalledTimes(1)
+      expect(result.stderr).toContain('Settings → Plugins')
+      expect(result.stderr).toContain(`dsh plugin --profile desktop add ${spec}`)
     } finally {
       await runtime.dispose()
     }
