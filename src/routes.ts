@@ -55,7 +55,7 @@ import { checkUpdates, isUpdatablePlugin, compareVersions, fetchNpmLatest, inval
 import { createThemeManager, type LoaderEntry } from './themes.ts'
 import { readJsonBody, refuseUnadmitted, sameOrigin, sendJson } from './http.ts'
 import { resolveDshHome } from './home-paths.ts'
-import { detectedDebugger, detectedSupervisor, restartAllowed, scheduleRestart, servingPort, trustedRestartRequest, trustedDownloadRequest, type RecoveryHandoffConfig, restartReachableFrom } from './restart.ts'
+import { detectedDebugger, detectedSupervisor, restartAllowed, scheduleRestart, servingPort, trustedRestartRequest, trustedDownloadRequest, trustedSelfUninstallRequest, selfUninstallReachableFrom, type RecoveryHandoffConfig, restartReachableFrom } from './restart.ts'
 import type { RecoveryPlugin } from './recovery.ts'
 import { activationAfterReplace, brokenClientBundles, bundlePatchIsEmpty, checkClientBundle, defaultHostRuntimeFacts, findUnservedConfigNamespaces, hasHostHalf, hostPeerGate, newlyBrokenBundles, peerGateRemedy, verifyActivation } from './verify.ts'
 import {
@@ -3758,6 +3758,9 @@ export function mountMarketRoutes(
           // Deliberately NOT folded into `restart`, which is also what the
           // settings page reads and writes back as the user's own choice.
           restartReachable: restartReachableFrom(request),
+          // Same door, one notch wider for the desktop proxy (#903): the
+          // card hides a remove button that could only ever answer 403.
+          selfUninstallReachable: selfUninstallReachableFrom(request),
           selfManaged: installed.dshmarket !== undefined || installed['dsh-market'] !== undefined,
           // Whether the host took the market's settings namespace (#677).
           // `unsupported-by-host` is 0.1.7 and newer, where settings come from
@@ -5484,8 +5487,13 @@ sendJson(response, 200, { updates })
         // read as an extra guard while testing nothing: origin-matches-host
         // is already part of what this checks, so no request can fail one
         // and pass the other.
-        if (!trustedRestartRequest(request)) {
-          sendJson(response, 403, { error: 'self-uninstall is limited to same-origin loopback requests' })
+        if (!trustedSelfUninstallRequest(request)) {
+          // Says what to do, not only which policy refused it: this is the one
+          // button whose failure leaves the user with no other way out of the
+          // page they are looking at (#903).
+          sendJson(response, 403, {
+            error: `不能从这个地址卸载插件市场（只接受本机同源请求）。请在运行 DSH 的机器上执行 \`dsh plugin --profile ${config.profile} remove dshmarket\`；桌面端也可以在它自己的「设置 → 插件」里移除。 / The market can only be removed from the same machine it runs on. Run \`dsh plugin --profile ${config.profile} remove dshmarket\` there, or remove it from the desktop app's Settings → Plugins.`,
+          })
           return
         }
         try {

@@ -243,6 +243,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			setChannelSwitchHint: "该版本低于当前已安装版本。",
 			setSelfRemove: "卸载插件市场",
 			setSelfRemoveHint: "从这个 profile 卸载市场。已装的其它插件不受影响。",
+			setSelfRemoveRemote: "这个页面不是从本机打开的，市场没法从这里卸载自己。请到运行 DSH 的那台机器上移除：桌面端用「设置 → 插件」，其它环境用命令行。",
 			setSelfConfirm: "确定要卸载插件市场吗？卸载后需使用命令行重新安装。",
 			setSelfPurge: "同时清除市场自己的数据",
 			setSelfPurgeOn: "将删除：市场的停用清单与自定义分组，以及它写进配置文件的停用记录——被停用的插件将恢复运行。不涉及密码或密钥，市场从不把它们存在磁盘上。",
@@ -980,6 +981,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			setChannelSwitchHint: "This version is lower than the one installed.",
 			setSelfRemove: "Uninstall the plugin market",
 			setSelfRemoveHint: "Uninstall the market from this profile. Your other plugins are untouched.",
+			setSelfRemoveRemote: "This page was not opened on the machine running DSH, so the market cannot remove itself from here. Remove it there: Settings → Plugins on the desktop app, or the command line elsewhere.",
 			setSelfConfirm: "Uninstall the plugin market? Reinstalling it requires the command line.",
 			setSelfPurge: "Also clear the market's own data",
 			setSelfPurgeOn: "Will delete: the market's disable list and custom groups, plus the disable entries it wrote into your config file — plugins it switched off will run again. No passwords or tokens are involved; the market never stores those on disk.",
@@ -15116,6 +15118,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				githubProxyCustom: typeof body.githubProxyCustom === "string" ? body.githubProxyCustom : null,
 				githubProxyManaged: body.githubProxyManaged === true,
 				selfManaged: body.selfManaged !== false,
+				selfUninstallReachable: body.selfUninstallReachable !== false,
 				buildEnv: body.buildEnv ?? {}
 			};
 		}
@@ -15222,6 +15225,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							githubProxyCustom: null,
 							githubProxyManaged: false,
 							selfManaged: true,
+							selfUninstallReachable: true,
 							buildEnv: {}
 						});
 					}
@@ -15548,7 +15552,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				onClick: () => {
 					onSaveEnv();
 				}
-			}, t("setBuildEnvSave")))), status?.selfManaged === true ? row(t("setSelfRemove"), t("setSelfRemoveHint"), phase === "confirming" || busy ? null : (0, react.createElement)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+			}, t("setBuildEnvSave")))), status?.selfManaged === true ? row(t("setSelfRemove"), status.selfUninstallReachable ? t("setSelfRemoveHint") : t("setSelfRemoveRemote"), status.selfUninstallReachable && phase !== "confirming" && !busy ? (0, react.createElement)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 				variant: "outline",
 				size: "sm",
 				className: Market_module_css_default.setDanger,
@@ -15556,7 +15560,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				onClick: () => {
 					setPhase("confirming");
 				}
-			}, t("setSelfRemove"))) : null, status?.selfManaged === true && (phase === "confirming" || busy) ? (0, react.createElement)("div", { className: Market_module_css_default.setConfirm }, (0, react.createElement)("div", { className: Market_module_css_default.setHint }, t("setSelfConfirm")), (0, react.createElement)("label", { className: Market_module_css_default.setCheck }, (0, react.createElement)("input", {
+			}, t("setSelfRemove")) : null) : null, status?.selfManaged === true && status.selfUninstallReachable && (phase === "confirming" || busy) ? (0, react.createElement)("div", { className: Market_module_css_default.setConfirm }, (0, react.createElement)("div", { className: Market_module_css_default.setHint }, t("setSelfConfirm")), (0, react.createElement)("label", { className: Market_module_css_default.setCheck }, (0, react.createElement)("input", {
 				type: "checkbox",
 				checked: purge,
 				onChange: () => {

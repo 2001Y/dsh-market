@@ -83,6 +83,12 @@ interface SelfStatus {
   githubProxyManaged: boolean
   /** Whether the profile package manager owns this market installation. */
   selfManaged: boolean
+  /**
+   * Whether a remove request from this page could pass the market's own
+   * fence (#903). False behind a reverse proxy or a remote host, where the
+   * card must not offer a button that can only answer 403.
+   */
+  selfUninstallReachable: boolean
   /** The effective build environment (composition + card-saved override). */
   buildEnv: Record<string, string>
 }
@@ -91,6 +97,7 @@ interface SelfStatus {
 interface StatusBody {
   version?: string
   restart?: boolean
+  selfUninstallReachable?: boolean
   channel?: string
   channels?: string[]
   region?: string
@@ -168,6 +175,7 @@ function readStatus(body: StatusBody): SelfStatus {
     githubProxyCustom: typeof body.githubProxyCustom === 'string' ? body.githubProxyCustom : null,
     githubProxyManaged: body.githubProxyManaged === true,
     selfManaged: body.selfManaged !== false,
+    selfUninstallReachable: body.selfUninstallReachable !== false,
     buildEnv: body.buildEnv ?? {},
   }
 }
@@ -279,7 +287,7 @@ export function SettingsCard({ t, onRemoved, sidebar }: SettingsCardProps): Reac
           setStatus({
             version: null, restart: false, channel: 'stable', channels: ['stable', 'beta'],
             region: 'global', regions: REGIONS, regionAuto: false,
-            githubProxyCustom: null, githubProxyManaged: false, selfManaged: true, buildEnv: {},
+            githubProxyCustom: null, githubProxyManaged: false, selfManaged: true, selfUninstallReachable: true, buildEnv: {},
           })
         }
       }
@@ -669,17 +677,18 @@ export function SettingsCard({ t, onRemoved, sidebar }: SettingsCardProps): Reac
               onClick: () => { void onSaveEnv() },
             }, t('setBuildEnvSave'))),
         ),
-        status?.selfManaged === true ? row(t('setSelfRemove'), t('setSelfRemoveHint'),
-          phase === 'confirming' || busy
-            ? null
-            : h(Button, {
+        status?.selfManaged === true ? row(t('setSelfRemove'),
+          status.selfUninstallReachable ? t('setSelfRemoveHint') : t('setSelfRemoveRemote'),
+          status.selfUninstallReachable && phase !== 'confirming' && !busy
+            ? h(Button, {
                 variant: 'outline',
                 size: 'sm',
                 className: css.setDanger,
                 disabled: busy,
                 onClick: () => { setPhase('confirming') },
-              }, t('setSelfRemove'))) : null,
-        status?.selfManaged === true && (phase === 'confirming' || busy)
+              }, t('setSelfRemove'))
+            : null) : null,
+        status?.selfManaged === true && status.selfUninstallReachable && (phase === 'confirming' || busy)
           ? h('div', { className: css.setConfirm },
               h('div', { className: css.setHint }, t('setSelfConfirm')),
               h('label', { className: css.setCheck },

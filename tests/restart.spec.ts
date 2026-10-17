@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { detectedDebugger, detectedSupervisor, respawnInvocation, restartAllowed, restartReachableFrom, trustedDownloadRequest, trustedRestartRequest } from '../src/restart.ts'
+import { detectedDebugger, detectedSupervisor, respawnInvocation, restartAllowed, restartReachableFrom, selfUninstallReachableFrom, trustedDownloadRequest, trustedRestartRequest, trustedSelfUninstallRequest } from '../src/restart.ts'
 
 const LAUNCH = { file: 'C:\\Program Files\\nodejs\\node.exe', args: ['--import', 'tsx/esm', 'bin.ts', '--profile', 'web'], viaShell: false }
 
@@ -82,6 +82,39 @@ describe('trustedDownloadRequest', () => {
  * mutation that trusted a MALFORMED Origin broke nothing: the catch's
  * `return false` was never observed.
  */
+/**
+ * Self-uninstall shares the restart fence, plus the one shape dsh Desktop's
+ * own proxy forwards: loopback peer, no forwarding trace, and neither `Host`
+ * nor `Origin` (#648, #903).
+ */
+describe('trustedSelfUninstallRequest', () => {
+  const req = (headers: Record<string, string>, remoteAddress = '127.0.0.1') =>
+    ({ headers, socket: { remoteAddress } }) as unknown as Parameters<typeof trustedSelfUninstallRequest>[0]
+  const ok = { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080' }
+
+  it('accepts the desktop proxy shape and everything the restart fence accepts', () => {
+    expect(trustedSelfUninstallRequest(req({}))).toBe(true)
+    expect(trustedSelfUninstallRequest(req(ok))).toBe(true)
+    expect(selfUninstallReachableFrom(req({}))).toBe(true)
+    // The restart button stays on the stricter answer: a second host is not
+    // something a desktop-managed profile should get from here.
+    expect(restartReachableFrom(req({}))).toBe(false)
+  })
+
+  it('refuses the desktop shape from anything but a direct loopback peer', () => {
+    expect(trustedSelfUninstallRequest(req({}, '192.168.1.5'))).toBe(false)
+    for (const header of ['forwarded', 'x-forwarded-for', 'x-real-ip']) {
+      expect(trustedSelfUninstallRequest(req({ [header]: 'for=1.2.3.4' })), header).toBe(false)
+    }
+  })
+
+  it('refuses a half-header request: one name present means a browser or a proxy', () => {
+    expect(trustedSelfUninstallRequest(req({ host: '127.0.0.1:3080' }))).toBe(false)
+    expect(trustedSelfUninstallRequest(req({ origin: 'http://127.0.0.1:3080' }))).toBe(false)
+    expect(trustedSelfUninstallRequest(req({ ...ok, origin: 'http://evil.example' }))).toBe(false)
+  })
+})
+
 describe('trustedRestartRequest', () => {
   const req = (headers: Record<string, string>, remoteAddress = '127.0.0.1') =>
     ({ headers, socket: { remoteAddress } }) as unknown as Parameters<typeof trustedRestartRequest>[0]

@@ -233,6 +233,48 @@ export function restartReachableFrom(request: Pick<IncomingMessage, 'headers' | 
   return directLoopbackRequest(request)
 }
 
+/**
+ * Whether the request has the exact shape dsh Desktop's own document proxy
+ * forwards: a loopback peer, no forwarding headers, and **neither** `Host`
+ * nor `Origin`.
+ *
+ * The desktop app strips `origin`/`host` (and cookies) before forwarding to
+ * the internal host (#648), so that absence is the trusted desktop shape
+ * rather than a missing signal. It is also not something a browser can
+ * produce — every browser request carries `Host` — so a rebinding page or a
+ * cross-site POST still lands on the strict path below, carrying the
+ * attacker's own names (#678). A local non-browser client could omit both,
+ * but such a client can equally set them correctly, so this widens nothing
+ * against the threats the fence exists for.
+ */
+function desktopForwardedRequest(request: Pick<IncomingMessage, 'headers' | 'socket'>): boolean {
+  const address = request.socket.remoteAddress
+  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
+  if (request.headers.forwarded !== undefined
+    || request.headers['x-forwarded-for'] !== undefined
+    || request.headers['x-real-ip'] !== undefined) return false
+  return request.headers.host === undefined && request.headers.origin === undefined
+}
+
+/**
+ * Whether a self-uninstall request may proceed.
+ *
+ * Same door as the restart route, plus the desktop proxy's headerless shape
+ * (#903): on Desktop the market's own card is the place users go to remove it,
+ * and the fence was refusing every such click because the proxy had stripped
+ * the very headers it required. Restart keeps the stricter predicate — it
+ * spawns a replacement host, which is not something a desktop-managed profile
+ * should get from here.
+ */
+export function trustedSelfUninstallRequest(request: Pick<IncomingMessage, 'headers' | 'socket'>): boolean {
+  return trustedRestartRequest(request) || desktopForwardedRequest(request)
+}
+
+/** Whether the request that asked for status could uninstall the market (#903). */
+export function selfUninstallReachableFrom(request: Pick<IncomingMessage, 'headers' | 'socket'>): boolean {
+  return trustedSelfUninstallRequest(request)
+}
+
 /** Whether a process-control request came from this Web host on loopback. */
 export function trustedRestartRequest(request: Pick<IncomingMessage, 'headers' | 'socket'>): boolean {
   if (!directLoopbackRequest(request)) return false

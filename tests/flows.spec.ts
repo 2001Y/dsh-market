@@ -841,15 +841,22 @@ function createTestbed(
   // and, as this suite proved once, would let a spec resolve a REAL commit
   // through a REAL proxy. Specs that care about the mirrors set it.
   const dispose = mountMarketRoutes(host as never, { profile: 'web', region: 'global', ...config }, runtime, () => agents, activation)
-  async function dispatch(method: string, path: string, body?: unknown, options?: { crossOrigin?: boolean; host?: string; origin?: string }) {
+  async function dispatch(method: string, path: string, body?: unknown, options?: { crossOrigin?: boolean; host?: string; origin?: string; desktopForwarded?: boolean }) {
     const handler = routes.get(path.split('?')[0])
     if (handler === undefined) throw new Error(`no route: ${path}`)
     const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body))]
+    // The desktop app's document proxy forwards with neither header (#648):
+    // that shape is what `desktopForwarded` reproduces.
+    const headers = options?.desktopForwarded === true
+      ? {}
+      : {
+          host: options?.host ?? 'localhost:3080',
+          origin: options?.origin ?? (options?.crossOrigin ? 'https://evil.example' : 'http://localhost:3080'),
+        }
     const request = {
       method, url: path,
       headers: {
-        host: options?.host ?? 'localhost:3080',
-        origin: options?.origin ?? (options?.crossOrigin ? 'https://evil.example' : 'http://localhost:3080'),
+        ...headers,
         ...(options?.forwarded ? { 'x-forwarded-for': '10.0.0.9' } : {}),
       },
       socket: { remoteAddress: options?.remoteAddress ?? '127.0.0.1' },
@@ -7594,6 +7601,21 @@ describe('self-uninstall — the market removing itself from its settings card',
     // `confirm: false` is not "close enough" either.
     const explicitlyNot = await bed.dispatch('POST', '/dsh-market/self-uninstall', { confirm: false })
     expect(String(explicitlyNot.json.error)).toContain('explicit confirmation')
+  })
+
+  it('is reachable from the desktop app, whose proxy strips Host and Origin (#903)', async () => {
+    // dsh Desktop forwards through its own document proxy with neither
+    // header (#648), which used to make this button answer 403 forever.
+    const desktop = await bed.dispatch('POST', '/dsh-market/self-uninstall', {}, { desktopForwarded: true })
+    expect(desktop.status).toBe(400)
+    expect(String(desktop.json.error)).toContain('explicit confirmation')
+    // The same shape still refuses a forwarded peer: a proxy that adds its
+    // own trace is not the desktop app's own forward.
+    expect((await bed.dispatch('POST', '/dsh-market/self-uninstall', {}, { desktopForwarded: true, forwarded: true })).status).toBe(403)
+    // And the status answer tells the card which of the two it is, without
+    // re-enabling the restart button that would spawn a second host.
+    const status = await bed.dispatch('GET', '/dsh-market/status', undefined, { desktopForwarded: true })
+    expect(status.json).toMatchObject({ selfUninstallReachable: true, restartReachable: false })
   })
 
   it('is refused from a cross-origin, forwarded or remote client', async () => {
