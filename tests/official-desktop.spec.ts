@@ -227,12 +227,42 @@ describe('official Electron profile runtime', () => {
   it('reports the removal when the reinstall cannot start', async () => {
     const service = manager()
     service.installBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'already-installed' }, packageResult: { exitCode: 1, output: '' } })
-    service.removeBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'bundle-in-use' }, packageResult: { exitCode: 1, output: '' } })
+    // Refused before pnpm: the manager returns a failure with no package result.
+    service.removeBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'bundle-in-use' } })
     const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
     try {
       await expect(runtime.runPlugin('desktop', ['add', 'example@2.0.0'])).resolves
-        .toMatchObject({ exitCode: 1, stderr: '{"code":"bundle-in-use"}' })
+        .toMatchObject({ exitCode: 1, stderr: expect.stringContaining('(bundle-in-use)'), wroteNothing: true })
       expect(service.installBundle).toHaveBeenCalledTimes(1)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('says so when a refusal happened before pnpm ran, and not when it did (#897)', async () => {
+    const service = manager()
+    // Before pnpm: no packageResult — the profile is untouched.
+    service.installBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'already-installed' } })
+    service.removeBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'already-installed' } })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    try {
+      await expect(runtime.runPlugin('desktop', ['add', 'example@2.0.0'])).resolves
+        .toMatchObject({ exitCode: 1, wroteNothing: true, stderr: expect.stringContaining('profile 没有任何改动') })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('does not claim an untouched profile when pnpm did run', async () => {
+    const service = manager()
+    service.installBundle.mockResolvedValueOnce({
+      application: 'failed', error: { code: 'operation-error' }, packageResult: { exitCode: 1, output: 'boom' },
+    })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    try {
+      const result = await runtime.runPlugin('desktop', ['add', 'example@2.0.0'])
+      expect(result.exitCode).toBe(1)
+      expect(result.wroteNothing).toBe(false)
     } finally {
       await runtime.dispose()
     }
@@ -242,6 +272,7 @@ describe('official Electron profile runtime', () => {
     const service = manager()
     service.installBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'network' }, packageResult: { exitCode: 1, output: '' } })
     const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    // Unrecognized codes stay as the manager wrote them.
     await expect(runtime.runPlugin('desktop', ['add', 'example'])).resolves.toMatchObject({ exitCode: 1, stderr: '{"code":"network"}' })
   })
 })

@@ -500,6 +500,17 @@ export interface InstallResult {
   cancelled: boolean
   /** Desktop's generation-wide package-operation gate rejected the start. */
   busy?: boolean
+  /**
+   * The host refused before it ran the package manager, so the profile is
+   * exactly as it was.
+   *
+   * The update route answers a failed run by reinstalling the previous build
+   * and, when that cannot be verified, tells the user to inspect a profile
+   * nothing touched. Desktop's manager has refusals of this kind of its own —
+   * it declines a spec it considers already installed before pnpm starts
+   * (#897) — and their only true account is "nothing happened".
+   */
+  wroteNothing?: boolean
   /** Package names pnpm reported as having ignored build scripts (ndjson). */
   ignoredBuilds?: string[]
   /**

@@ -2655,6 +2655,40 @@ describe('update flow — no npm publishing required', () => {
     expect(add?.some(arg => arg === 'dsh-loop@latest')).toBe(false)
   })
 
+  it('does not try to restore a profile the host never touched (#897)', async () => {
+    // Desktop's manager refuses an `add` for a package already in the profile
+    // before pnpm starts. Calling that a failed update sent the route into a
+    // rollback of a profile nothing had written to, and then told the user to
+    // inspect it — alarm over an untouched state.
+    advanceNpmLatest('1.2.0')
+    const adds: string[][] = []
+    bed.dispose()
+    bed = createTestbed({}, {
+      runPlugin: async (_profile, args) => {
+        if (args[0] === 'add') adds.push(args)
+        return {
+          exitCode: 1,
+          timedOut: false,
+          stdout: '',
+          stderr: '桌面端认为这个包已经装在 profile 里 / the desktop app treats this package as already installed (already-installed)',
+          cancelled: false,
+          wroteNothing: true,
+        }
+      },
+      probePnpm: () => Promise.resolve(true),
+      provisionPnpm: () => Promise.resolve({ ok: true }),
+      cancelActive: () => false,
+    })
+
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+
+    expect(r.status).toBe(502)
+    expect(String(r.json.error)).toMatch(/already-installed/)
+    expect(String(r.json.error)).not.toMatch(/未能验证|could not be verified/)
+    // The update itself, and no rollback reinstall behind it.
+    expect(adds).toHaveLength(1)
+  })
+
   it('keeps an exact route pin authoritative over a mismatched Desktop resolvedNpmVersion (#496)', async () => {
     // The route already sent name@1.2.0. A host that reports a different
     // resolvedNpmVersion (and whose pnpm tree somehow landed there) must

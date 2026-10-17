@@ -31,7 +31,47 @@ function detail(error: unknown): string {
   if (typeof error === 'string') return error
   if (error instanceof Error) return error.message
   if (error === undefined) return 'plugin manager did not explain the failure'
+  const code = managementCode(error)
+  const copy = code === undefined ? undefined : REFUSAL_COPY[code]
+  // The code stays on the line: it is what the log and the issue report carry.
+  if (copy !== undefined) return `${copy.zh} / ${copy.en} (${code})`
   return JSON.stringify(error)
+}
+
+/**
+ * What the manager's refusal means, in the user's terms.
+ *
+ * These codes are the manager's localization keys, not sentences; they used to
+ * reach the page as `{"code":"already-installed"}` and, on the update route,
+ * wrapped in "restoration of the previous build could not be verified" — alarm
+ * about a profile that was never touched (#897). The bilingual half is picked
+ * by the same `localizeBilingual` every other server message goes through.
+ */
+const REFUSAL_COPY: Record<string, { zh: string; en: string }> = {
+  'already-installed': {
+    zh: '桌面端认为这个包已经装在 profile 里，因此在运行 pnpm 之前就拒绝了这次安装，profile 没有任何改动',
+    en: 'the desktop app treats this package as already installed and refused the install before pnpm ran, so the profile is unchanged',
+  },
+  'not-removable': {
+    zh: '这个插件由桌面端自己管理，市场不能移除它',
+    en: 'the desktop app manages this plugin itself, so the market cannot remove it',
+  },
+  'bundle-in-use': {
+    zh: '这个插件正在使用中，桌面端不允许现在移除',
+    en: 'the plugin is in use, and the desktop app will not remove it right now',
+  },
+  'stop-profile': {
+    zh: '要移除它得先停止这个 profile',
+    en: 'removing it requires stopping this profile first',
+  },
+  'management-required': {
+    zh: '这个 profile 由桌面端自己管理，市场不能直接改动',
+    en: 'this profile is managed by the desktop app itself, so the market cannot change it',
+  },
+  'incompatible-version': {
+    zh: '这个版本与当前 DSH 不兼容，宿主拒绝安装',
+    en: 'this version is not compatible with the running DSH, so the host refused it',
+  },
 }
 
 /** The manager's own refusal code, whether it was returned or thrown. */
@@ -189,11 +229,14 @@ export function createOfficialDesktopRuntime(
         stdout: output,
         stderr: message,
         cancelled: current.cancelled || result.application === 'cancelled',
+        // No package result means the manager stopped before it ran pnpm: the
+        // profile is untouched, and the route must not try to "restore" it.
+        wroteNothing: !ok && result.packageResult === undefined,
       }
     }, (error): InstallResult => {
       const message = detail(error)
       progress.error = message
-      return failure(message, 127)
+      return { ...failure(message, 127), wroteNothing: managementCode(error) !== undefined }
     }).finally(() => {
       progress.active = false
       progress.cancelling = false

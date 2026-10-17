@@ -4808,7 +4808,13 @@ sendJson(response, 200, { updates })
                 + (dropped ? '' : ' (nothing to drop: the profile did not declare it under either key)'))
             }
             if ((result.exitCode !== 0 || result.timedOut) && !cancelled && result.busy !== true
-              && !pnpmNeverStarted(result)) {
+              && !pnpmNeverStarted(result)
+              // The host refused before running pnpm (#897): nothing was
+              // written, so there is nothing to restore — and the "could not
+              // verify restoration, inspect this profile" warning this block
+              // raises on a failed rollback would be alarm about an untouched
+              // profile.
+              && result.wroteNothing !== true) {
               if (pnpmBlockedByOpenFiles(result)) {
                 const kept = keepLockedBuild()
                 rollbackOk = kept.ok
@@ -5170,7 +5176,13 @@ sendJson(response, 200, { updates })
               // Last, so the specific ones above keep the floor they had: this
               // only fills the case where every named branch said nothing and
               // the user would otherwise get pnpm's stack (#848).
-              error: versionFailureError ?? renamedError ?? trialError ?? brokenEntryError ?? hardFailureRollbackError ?? staleError ?? pnpmFailureMessage(result) ?? undefined,
+              // The host's own refusal sentence (#897): when it stopped
+              // before running pnpm there is no classifier for its words and
+              // no rollback behind it, so without this the answer carried no
+              // reason at all.
+              error: versionFailureError ?? renamedError ?? trialError ?? brokenEntryError ?? hardFailureRollbackError ?? staleError
+                ?? (result.wroteNothing === true && result.stderr.trim() !== '' ? result.stderr.trim() : undefined)
+                ?? pnpmFailureMessage(result) ?? undefined,
               exitCode: result.exitCode,
               timedOut: result.timedOut,
               stdout: result.stdout,
