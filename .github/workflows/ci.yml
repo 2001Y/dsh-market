@@ -177,7 +177,7 @@ jobs:
         # the profile's package.json). The market never runs it from inside a
         # running Desktop, so nothing here depends on the difference; the CLI
         # path this lane drives is the web profile's, unchanged.
-        dsh: ['0.1.0-rc.8', '0.1.2-alpha.2', '0.1.7-rc.2', '0.2.0-rc.2', '0.2.1-alpha.4', '0.2.1-rc.1']
+        dsh: ['0.1.0-rc.8', '0.1.2-alpha.2', '0.1.7-rc.2', '0.2.0-rc.2', '0.2.1-alpha.4', '0.2.1-rc.1', '0.2.1-rc.2']
         exclude:
           # Host-API breakage is platform-independent, and Windows web-e2e is
           # the slowest job in the matrix (~8 min). Running the older and the
@@ -195,6 +195,8 @@ jobs:
             dsh: '0.2.1-alpha.4'
           - os: windows-latest
             dsh: '0.2.1-rc.1'
+          - os: windows-latest
+            dsh: '0.2.1-rc.2'
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
