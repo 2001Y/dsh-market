@@ -5185,7 +5185,10 @@ sendJson(response, 200, { updates })
               // ever sees this when something really is unbootable.
               ...(() => { const orphans = orphanBundles(); return orphans.length > 0 ? { orphanBundles: orphans } : {} })(),
               staleReason: staleReason ?? undefined,
-              failureCode: versionFailureCode ?? undefined,
+              // The host's own refusal code when it stopped before pnpm
+              // (#909): `market-self-update` tells a client that the button
+              // cannot work on this host, not that the update was broken.
+              failureCode: versionFailureCode ?? result.refusalCode ?? undefined,
               renamedTo: renamedTo ?? undefined,
               removedDeclaration: removedDeclaration ?? undefined,
               ...(droppedBundles.length > 0 ? { droppedBundles } : {}),

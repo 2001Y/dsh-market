@@ -223,8 +223,15 @@ describe('official Electron profile runtime', () => {
       expect(result.wroteNothing).toBe(true)
       expect(service.removeBundle).not.toHaveBeenCalled()
       expect(service.installBundle).toHaveBeenCalledTimes(1)
-      expect(result.stderr).toContain('Settings → Plugins')
-      expect(result.stderr).toContain(`dsh plugin --profile desktop add ${spec}`)
+      // Machine-readable (#909), so a client can tell this apart from an
+      // ordinary failure instead of parsing the sentence.
+      expect(result.refusalCode).toBe('market-self-update')
+      // The two paths named before 1.66.40 do not exist on dsh 0.2.1: the
+      // CLI refuses `--profile desktop`, and Settings → Plugins has no update
+      // entry. Point at the one route a reporter verified (#909).
+      expect(result.stderr).toContain(`pnpm add ${spec} --config.minimum-release-age=0`)
+      expect(result.stderr).toContain('#909')
+      expect(result.stderr).not.toContain('dsh plugin --profile desktop')
     } finally {
       await runtime.dispose()
     }

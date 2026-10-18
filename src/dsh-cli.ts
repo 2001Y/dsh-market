@@ -511,6 +511,16 @@ export interface InstallResult {
    * (#897) — and their only true account is "nothing happened".
    */
   wroteNothing?: boolean
+  /**
+   * The host's own refusal code, when it stopped before running pnpm.
+   *
+   * The desktop manager answers with structured codes — `already-installed`,
+   * `bundle-in-use`, `market-self-update` — but they used to survive only as
+   * text inside `stderr`. The update route forwards this to `failureCode`,
+   * so a client can tell "the market cannot update itself here" (#909) from
+   * an ordinary failure without parsing a sentence.
+   */
+  refusalCode?: string
   /** Package names pnpm reported as having ignored build scripts (ndjson). */
   ignoredBuilds?: string[]
   /**

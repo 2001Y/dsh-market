@@ -2743,6 +2743,36 @@ describe('update flow — no npm publishing required', () => {
     expect(adds).toHaveLength(1)
   })
 
+  it('reports the host refusal code as failureCode, not just as text (#909)', async () => {
+    // The desktop manager refuses a self-update before pnpm runs and the
+    // bridge now carries its code (market-self-update). The route has to put
+    // it on the response: a client that only sees text cannot tell this from
+    // an ordinary failure and keeps offering a button that cannot work.
+    advanceNpmLatest('1.2.0')
+    bed.dispose()
+    bed = createTestbed({}, {
+      runPlugin: async () => ({
+        exitCode: 1,
+        timedOut: false,
+        stdout: '',
+        stderr: '市场不能在自己的请求里更新自己 / the market cannot update itself',
+        cancelled: false,
+        wroteNothing: true,
+        refusalCode: 'market-self-update',
+      }),
+      acceptsMarketPnpmFlags: false,
+      probePnpm: () => Promise.resolve(true),
+      provisionPnpm: () => Promise.resolve({ ok: true }),
+      cancelActive: () => false,
+    })
+
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+
+    expect(r.status).toBe(502)
+    expect(r.json).toMatchObject({ ok: false, failureCode: 'market-self-update' })
+    expect(String(r.json.error)).toContain('market cannot update itself')
+  })
+
   it('keeps an exact route pin authoritative over a mismatched Desktop resolvedNpmVersion (#496)', async () => {
     // The route already sent name@1.2.0. A host that reports a different
     // resolvedNpmVersion (and whose pnpm tree somehow landed there) must
