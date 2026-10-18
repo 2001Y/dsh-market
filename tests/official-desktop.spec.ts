@@ -295,6 +295,30 @@ describe('official Electron profile runtime', () => {
     }
   })
 
+  it('treats a pre-install host check as an untouched profile, and names the knob (#912)', async () => {
+    // The host checks github.com reachability before it runs pnpm and gives
+    // up after five seconds. That is not a write — but the manager attaches a
+    // package result, so wroteNothing used to be false and the update route
+    // "restored" a profile nothing had touched (#912).
+    const service = manager()
+    service.installBundle.mockResolvedValueOnce({
+      application: 'failed',
+      error: { code: 'operation-error', diagnostic: 'dsh: connection to github.com timed out after 5000ms' },
+      packageResult: { exitCode: 1, output: '' },
+    })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    try {
+      const result = await runtime.runPlugin('desktop', ['add', 'example@2.0.0'])
+      expect(result.exitCode).toBe(1)
+      expect(result.wroteNothing).toBe(true)
+      // The five seconds are the host's own check, not the install failing.
+      expect(result.stderr).toContain('githubConnectionTimeoutMs')
+      expect(result.stderr).toContain('profile 没有任何改动')
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   it('maps manager failure without reporting success', async () => {
     const service = manager()
     service.installBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'network' }, packageResult: { exitCode: 1, output: '' } })
