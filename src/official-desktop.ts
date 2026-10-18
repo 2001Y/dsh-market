@@ -96,7 +96,14 @@ function selfUpdateMessage(spec: string): string {
   const at = spec.indexOf('@', 1)
   const version = at === -1 ? '' : spec.slice(at + 1)
   const target = version === '' ? spec : `${registryNameOf(spec) ?? spec}@${version}`
-  return `市场不能在自己的请求里先卸载自己：桌面端的移除会先把市场从正在运行的组合里摘掉，补装那一步就再也执行不到了（#900）。请在桌面端的「设置 → 插件」里更新市场${version === '' ? '' : ` 到 ${version}`}，或完全退出 DSH 后在终端执行 \`dsh plugin --profile desktop add ${target}\`。 / The market cannot remove itself to update: the desktop app unloads it from the running composition first, so the reinstall never runs (#900). Update it from the desktop app's Settings → Plugins${version === '' ? '' : ` (to ${version})`}, or quit DSH completely and run \`dsh plugin --profile desktop add ${target}\` in a terminal.`
+  // Two paths that used to be named here do not exist on dsh 0.2.1, and a
+  // reporter proved both (#909): `dsh plugin --profile desktop` is refused
+  // outright, and the app's Settings → Plugins has no update entry — its
+  // manager refuses re-adding a package that is already declared. The only
+  // route left is pnpm run against the profile with the app fully quit, which
+  // is what the reporter verified. `--config.minimum-release-age=0` is the
+  // market's own one-shot flag, spelled so it works in every shell.
+  return `市场不能在自己的请求里更新自己：桌面端的移除会先把市场从正在运行的组合里摘掉，补装那一步就执行不到了（#900），而应用内的「设置 → 插件」没有更新入口（#909）。要更新${version === '' ? '' : ` 到 ${version}`}：完全退出 DSH Desktop，在 profile 目录执行 \`pnpm add ${target} --config.minimum-release-age=0\`（没有 pnpm 时用 \`npx pnpm add …\`），然后重新启动。Windows 的 profile 一般在 %USERPROFILE%\\.dsh\\profiles\\desktop。 / The market cannot update itself: the desktop app unloads it from the running composition first, so the reinstall never runs (#900), and the app's Settings → Plugins has no update entry (#909). To update${version === '' ? '' : ` to ${version}`}: quit DSH Desktop completely, run \`pnpm add ${target} --config.minimum-release-age=0\` in the profile directory (use \`npx pnpm add …\` if pnpm is not installed), then start DSH again. On Windows the profile is usually %USERPROFILE%\\.dsh\\profiles\\desktop.`
 }
 
 /** The manager's own refusal code, whether it was returned or thrown. */
@@ -262,11 +269,18 @@ export function createOfficialDesktopRuntime(
         // No package result means the manager stopped before it ran pnpm: the
         // profile is untouched, and the route must not try to "restore" it.
         wroteNothing: !ok && result.packageResult === undefined,
+        // The manager's own code, kept machine-readable (#909): a client can
+        // tell a self-update refusal from an ordinary failure.
+        ...(ok ? {} : { refusalCode: managementCode(result.error) }),
       }
     }, (error): InstallResult => {
       const message = detail(error)
       progress.error = message
-      return { ...failure(message, 127), wroteNothing: managementCode(error) !== undefined }
+      return {
+        ...failure(message, 127),
+        wroteNothing: managementCode(error) !== undefined,
+        ...(managementCode(error) === undefined ? {} : { refusalCode: managementCode(error) }),
+      }
     }).finally(() => {
       progress.active = false
       progress.cancelling = false
