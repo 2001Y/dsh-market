@@ -10017,6 +10017,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				setRestarting(true);
 				setInstallError(null);
 				setRecovery(null);
+				const shellRestart = typeof window === "undefined" ? void 0 : window.__dshHostShell?.restart;
+				if (typeof shellRestart === "function") try {
+					shellRestart();
+					return;
+				} catch {}
 				const awaitNewBoot = () => {
 					const deadline = Date.now() + 6e4;
 					const poll = () => {
