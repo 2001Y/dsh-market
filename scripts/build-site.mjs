@@ -503,6 +503,31 @@ ${urlEntry((l) => l.privacyPath, updated, 'yearly')}
 </urlset>
 `)
 
+// The plugin market index, mirrored so dshmarket.com answers the same URL as
+// the list it comes from. One source of truth: the document is generated and
+// validated upstream (awesome-dsh-plugin.com/index.json) and copied here at
+// build time — this site never derives a second one. A deploy without it (the
+// fetch failed, or the upstream was mid-rebuild) still ships the pages; it
+// just does not claim an index it does not have.
+const INDEX_FILE = 'data/market-index.json'
+let indexMirrored = false
+if (fs.existsSync(INDEX_FILE)) {
+  try {
+    const mirrored = JSON.parse(fs.readFileSync(INDEX_FILE, 'utf8'))
+    if (mirrored?.format === 1 && Array.isArray(mirrored.plugins) && mirrored.plugins.length > 0) {
+      fs.writeFileSync(`${OUT}/index.json`, JSON.stringify(mirrored, null, 1) + '\n')
+      indexMirrored = true
+      console.log(`index mirrored: ${mirrored.plugins.length} plugins`)
+    } else {
+      console.log('index not mirrored: upstream document is empty or not format 1')
+    }
+  } catch (error) {
+    console.log(`index not mirrored: ${error instanceof Error ? error.message : String(error)}`)
+  }
+} else {
+  console.log('index not mirrored: data/market-index.json was not fetched')
+}
+
 const pages = plugins.length * LOCALES.length + LOCALES.length * 3
 console.log(`site built: ${plugins.length} plugins × ${LOCALES.length} locales = ${pages} pages`)
 console.log(`  README bodies rendered: ${readmeCount} (${mismatchCount} in a fallback language)`)

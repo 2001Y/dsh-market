@@ -14,3 +14,6 @@ client/*.map
 # build fetches its own into a throwaway checkout, and the market reads the
 # live catalog.
 data/registry-snapshot.json
+# The plugin market index dshmarket.com mirrors (generated upstream at
+# awesome-dsh-plugin.com/index.json), fetched by the site build.
+data/market-index.json

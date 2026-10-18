@@ -210,6 +210,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			setSidebar: "侧栏入口",
 			setSidebarHint: "在侧栏「插件」下方显示市场。设置里的入口不变。",
 			setSidebarOnlyDoorHint: "这个宿主没有市场设置页，这一行就是进入市场的入口。",
+			setIndexSource: "官方 Discover 索引",
+			setIndexSourceHint: "dsh 0.2.1 起，官方的「插件 → 发现 → 索引源」可以添加 https://awesome-dsh-plugin.com/index.json —— 官方发现页和 plugin_market 智能体工具会搜索同一份目录。",
 			setSidebarOn: "显示",
 			setSidebarOff: "不显示",
 			sidebarTip: "想更快打开？可在侧栏显示。",
@@ -948,6 +950,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			setSidebar: "Sidebar shortcut",
 			setSidebarHint: "Shows the market below Plugins in the sidebar. The Settings entry stays.",
 			setSidebarOnlyDoorHint: "This host keeps the market out of Settings, so this row is the way in.",
+			setIndexSource: "Discover index",
+			setIndexSourceHint: "On dsh 0.2.1 and newer, add https://awesome-dsh-plugin.com/index.json under Plugins → Discover → Index sources — the official Discover tab and the plugin_market agent tool then search the same catalog.",
 			setSidebarOn: "Show",
 			setSidebarOff: "Hide",
 			sidebarTip: "Want a quicker open? Show it in the sidebar.",
@@ -15458,7 +15462,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				onClick: () => {
 					if (sidebarState.enabled !== on) onSidebar(on);
 				}
-			}, t(on ? "setSidebarOn" : "setSidebarOff"))))) : null, status?.selfManaged === true ? row((update?.updateAvailable === true || update?.hostManaged === true) && update.latest !== null ? `${t("setSelfUpdateReady")} ${update.latest}` : update?.channelSwitch != null ? `${t("setChannelSwitch")} ${update.channelSwitch}` : t("setSelfUpToDate"), phase === "updated" ? t("setSelfUpdatedHint") : update?.channelSwitch != null ? t("setChannelSwitchHint") : update?.updateAvailable === true ? t("setSelfUpdateHint") : update?.hostManaged === true && update.latest !== null ? t("setSelfHostManagedHint") : t("setSelfUpToDateHint"), phase === "updated" ? null : update?.updateAvailable === true ? (0, react.createElement)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+			}, t(on ? "setSidebarOn" : "setSidebarOff"))))) : null, row(t("setIndexSource"), t("setIndexSourceHint"), null), status?.selfManaged === true ? row((update?.updateAvailable === true || update?.hostManaged === true) && update.latest !== null ? `${t("setSelfUpdateReady")} ${update.latest}` : update?.channelSwitch != null ? `${t("setChannelSwitch")} ${update.channelSwitch}` : t("setSelfUpToDate"), phase === "updated" ? t("setSelfUpdatedHint") : update?.channelSwitch != null ? t("setChannelSwitchHint") : update?.updateAvailable === true ? t("setSelfUpdateHint") : update?.hostManaged === true && update.latest !== null ? t("setSelfHostManagedHint") : t("setSelfUpToDateHint"), phase === "updated" ? null : update?.updateAvailable === true ? (0, react.createElement)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 				variant: "primary",
 				size: "sm",
 				disabled: busy,

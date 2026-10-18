@@ -514,6 +514,10 @@ export function SettingsCard({ t, onRemoved, sidebar }: SettingsCardProps): Reac
               onClick: () => { if (sidebarState.enabled !== on) onSidebar(on) },
             }, t(on ? 'setSidebarOn' : 'setSidebarOff'))),
           )) : null,
+        // Where the same catalog is reachable on a host that reads market
+        // indexes (dsh 0.2.1+): a statement, not an action — the address is
+        // the whole thing the user needs, and it stays selectable here.
+        row(t('setIndexSource'), t('setIndexSourceHint'), null),
         status?.selfManaged === true ? row(
           // An older offer is not an update, and calling it one would have
           // the user click "更新" to go backwards. It IS what picking an
