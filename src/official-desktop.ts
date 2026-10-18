@@ -27,6 +27,32 @@ function failure(message: string, exitCode = 1): InstallResult {
   return { exitCode, timedOut: false, stdout: '', stderr: message, cancelled: false }
 }
 
+/**
+ * The host's own pre-install diagnostic, when it wrote one.
+ *
+ * On dsh 0.2.1 the manager runs checks of its own before pnpm starts and
+ * reports them as `dsh: …` in an `operation-error`'s `diagnostic` (#912).
+ */
+function hostDiagnostic(error: unknown): string | undefined {
+  const diagnostic = (error as { diagnostic?: unknown } | null | undefined)?.diagnostic
+  return typeof diagnostic === 'string' && diagnostic.startsWith('dsh: ') ? diagnostic : undefined
+}
+
+/**
+ * Whether the host stopped before pnpm ran, on a check of its own (#912).
+ *
+ * `checkGithubConnection` refuses an install after five seconds without
+ * touching the profile; so does the compatibility gate (`installation
+ * rejected:`). Neither is a write, and treating them as one sent the update
+ * route into a rollback of an untouched profile — a false "restoration
+ * could not be verified" alarm that buried the real reason.
+ */
+function prePnpmHostFailure(result: ManagedResult): boolean {
+  const diagnostic = hostDiagnostic(result.error)
+  return diagnostic !== undefined
+    && /^dsh: (?:connection to \S+ timed out|installation rejected:)/.test(diagnostic)
+}
+
 function detail(error: unknown): string {
   if (typeof error === 'string') return error
   if (error instanceof Error) return error.message
@@ -37,6 +63,15 @@ function detail(error: unknown): string {
   if (copy !== undefined) return `${copy.zh} / ${copy.en} (${code})`
   const message = (error as { message?: unknown }).message
   if (typeof message === 'string' && message !== '') return message
+  const diagnostic = hostDiagnostic(error)
+  if (diagnostic !== undefined) {
+    if (/^dsh: connection to \S+ timed out/.test(diagnostic)) {
+      // The 5 s is the host's own pre-install reachability check, not the
+      // install failing: say which knob moves it (#912).
+      return `${diagnostic}\n\n宿主在开始安装前自己检查了 GitHub 的连通性，5 秒内没连上就放弃了这次安装，pnpm 还没有开始，profile 没有任何改动。如果手动 \`git ls-remote\` 能连上（例如已给 git 配好代理或换过 TLS 后端），把宿主 plugin-manager 的 \`githubConnectionTimeoutMs\` 调大再试（cordis.yml 里该插件的 config）。 / the host checks GitHub reachability before installing and gave up after five seconds; pnpm never started and the profile is unchanged. If git itself can reach GitHub (a proxy, or a different TLS backend), raise the host plugin-manager's \`githubConnectionTimeoutMs\` (its config in cordis.yml) and try again.`
+    }
+    return diagnostic
+  }
   return JSON.stringify(error)
 }
 
@@ -268,7 +303,9 @@ export function createOfficialDesktopRuntime(
         cancelled: current.cancelled || result.application === 'cancelled',
         // No package result means the manager stopped before it ran pnpm: the
         // profile is untouched, and the route must not try to "restore" it.
-        wroteNothing: !ok && result.packageResult === undefined,
+        // A pre-install host check (#912) is the same shape even when the
+        // manager attached a package result to its refusal.
+        wroteNothing: !ok && (result.packageResult === undefined || prePnpmHostFailure(result)),
         // The manager's own code, kept machine-readable (#909): a client can
         // tell a self-update refusal from an ordinary failure.
         ...(ok ? {} : { refusalCode: managementCode(result.error) }),
