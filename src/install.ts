@@ -659,7 +659,10 @@ export async function validateAddedPlugins(
     const packageDir = join(dir, 'node_modules', n)
     // hasLoadableEntry, not entryArtifactExists: carrier bundles legitimately
     // ship no entry of their own (#103) and must not be uninstalled here.
-    if (!hasDshManifest(packageDir) || !hasLoadableEntry(dir, n)) {
+    // The host install tree is passed too (#906): a carrier mounting only
+    // in-box packages resolves nowhere under the profile, and judging it by
+    // that alone deleted a package the host had just installed correctly.
+    if (!hasDshManifest(packageDir) || !hasLoadableEntry(dir, n, hostDirectory ?? findDshInstallDir())) {
       removedBroken.push(n)
       await removeAndReconcile(run, profile, dir, n, hostDirectory)
       continue
