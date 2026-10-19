@@ -386,6 +386,25 @@ describe('startRecoveryServer', () => {
     expect(text).not.toContain('C:/Users/Alice/private')
   })
 
+  it.each([
+    ['C:\\Users\\Alice\\', String.raw`c:/Users\ALICE\private`, String.raw`~\private`],
+    ['C:/Users/Alice/', 'c:/USERS/alice/private', '~/private'],
+    ['/home/alice/', '/home/alice/private', '~/private'],
+  ])('redacts trailing-separator home %s in HTTP recovery logs (#907)', async (directory, path, masked) => {
+    vi.mocked(homedir).mockReturnValue(directory)
+    const { base, config } = await serve()
+    const original = `link:${path}\r\napi-key=secret\nlast line\n`
+    const expected = `link:${masked}\r\napi-key=***\nlast line\n`
+    for (const file of [config.logs.out, config.logs.err, `${config.logs.err}.recovery.log`]) {
+      writeFileSync(file, original)
+    }
+    const response = await fetch(base + '/dsh-market/logs')
+    expect(response.status).toBe(200)
+    const text = await response.text()
+    expect(text.split(expected)).toHaveLength(4)
+    expect(text).not.toContain('secret')
+  })
+
   it('refuses a cross-site write and accepts a same-origin one', async () => {
     const { base, finished } = await serve()
     const hostile = await fetch(base + '/dsh-market/recovery/apply', {

@@ -90,6 +90,39 @@ describe('home path redaction (#907)', () => {
     vi.mocked(homedir).mockReturnValue('/home/alice')
     expect(exportLogs({}, ['file:///home/alice/private'])).toContain('file://~/private')
   })
+
+  it.each([
+    ['C:\\Users\\Alice\\', String.raw`c:/Users\ALICE\private`, String.raw`~\private`],
+    ['C:/Users/Alice/', 'c:/USERS/alice/private', '~/private'],
+    ['/home/alice/', '/home/alice/private', '~/private'],
+  ])('normalizes the trailing separator in %s before masking events and history (#907)', (directory, path, masked) => {
+    vi.mocked(homedir).mockReturnValue(directory)
+    configurePersistentLog(logFile)
+    logEvent('info', 'trailing-home', `link:${path}\nforged token=secret`)
+    const entry = JSON.parse(readPersistentLog(logFile)[0]!) as { detail: string }
+    expect(entry.detail).toBe(`link:${masked}forged token=***`)
+    expect(exportLogs({ host: path! }, [path!])).toContain(`host: ${masked}\n`)
+    expect(exportLogs({}, [path!])).toContain(`## profile state\n${masked}\n`)
+    expect(exportLogs({})).toContain(`trailing-home: link:${masked}forged token=***`)
+
+    const historical = JSON.stringify({ detail: path }) + '\n'
+    writeFileSync(logFile, historical)
+    const prior = exportLogs({}, [], readPersistentLog(logFile)).split('## previous sessions (persisted log)\n')[1]!.split('\n')[0]!
+    expect(JSON.parse(prior)).toEqual({ detail: masked })
+    expect(readFileSync(logFile, 'utf8')).toBe(historical)
+  })
+
+  it.each([
+    ['C:\\', String.raw`C:\private`, String.raw`~\private`],
+    ['C:/', 'c:/private', '~/private'],
+    ['\\\\server\\share\\', '//SERVER/share/private', '~/private'],
+    ['/', '/home/alice/private', '/home/alice/private'],
+  ])('preserves the path semantics of root home %s (#907)', (directory, path, expected) => {
+    vi.mocked(homedir).mockReturnValue(directory)
+    expect(exportLogs({}, [path!])).toContain(`## profile state\n${expected}\n`)
+    const unchanged = ['C:relative', 'D:/private', '//server/share-other/private', 'ordinary text']
+    expect(exportLogs({}, unchanged)).toContain(unchanged.join('\n'))
+  })
 })
 
 describe('persistent log sink', () => {
