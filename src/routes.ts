@@ -2050,6 +2050,12 @@ export function mountMarketRoutes(
         version,
         requirement: verdict.requirement,
         hostVersion: host?.version ?? null,
+        // #923: the client's "find a compatible version" search is keyed by
+        // the npm name, and the install branch could fall back to the catalog
+        // entry's `npm` while the update branch had nothing. The value is
+        // already here — it is this function's first argument and the key the
+        // registry lookup above used — so publish it.
+        npmName,
       },
       error: nothingWasInstalled
         ? `${displayName} ${version ?? ''} 要求的 DSH 版本是 ${verdict.requirement ?? '未知'}，而当前运行的是 ${host?.version ?? '未知版本'}，装上多半会直接报错。已停止，没有安装任何东西。 / ${displayName} ${version ?? ''} declares it needs DSH ${verdict.requirement ?? '(unknown)'}, and this host is ${host?.version ?? 'unknown'}; installing it would most likely break the plugin. Nothing was installed.`
@@ -4688,6 +4694,12 @@ sendJson(response, 200, { updates })
             if (pinnedForIdentification) {
               declareProfileDependency(config.profile, name, pinValue, activeProfileDir)
             }
+            // #928: an update is remove-then-add, and a host killed between
+            // the two leaves a package that is simply gone — with no record
+            // of what was being attempted, because the completion log never
+            // runs. Write the intent first, so the log can answer "where did
+            // my plugin go" after the fact.
+            logEvent('info', 'update-start', `${name} -> ${target} (profile ${config.profile})`)
             const result = await runPlugin(config.profile, addArgs)
             const cancelled = result.cancelled
             // The pin above is the market's own write, so it is undone whenever
@@ -5979,6 +5991,10 @@ sendJson(response, 200, { updates })
             // it is meant to clean up after, and the rows outlive the package
             // as boot-time orphans (#799).
             const ownedRows = rowIdsForPackage(host, activeProfileDir, name)
+            // #928: the same intent record as the update path — an uninstall
+            // interrupted mid-remove leaves the same "where did it go" with no
+            // entry saying what was running.
+            logEvent('info', 'uninstall-start', `${name} (profile ${config.profile})`)
             const result = await runPlugin(config.profile, ['remove', name])
             const cancelled = result.cancelled
             const ok = result.exitCode === 0 && !result.timedOut && !cancelled
