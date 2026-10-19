@@ -5167,6 +5167,24 @@ sendJson(response, 200, { updates })
               logEvent('warn', 'update-bundles-dropped',
                 `${name}: after this update ${droppedBundles.join(', ')} ${droppedBundles.length === 1 ? 'is' : 'are'} still declared in dependencies but no longer in dsh.profile.bundles, so ${droppedBundles.length === 1 ? 'it' : 'they'} will not load — the market did not write that change (#720)`)
             }
+            // #935: the desktop manager's removeBundle writes the bundle row
+            // out FIRST and only then checks whether a live fiber still uses
+            // the package — so a `bundle-in-use` refusal leaves the row gone
+            // while dependencies and node_modules stay. The plugin keeps
+            // running this session and silently fails to load next boot.
+            // Restore the row, scoped to exactly that refusal and to this
+            // operation's own target: the read-only stance in #720/#696
+            // still holds for every other way a row can disappear.
+            if (!ok && !cancelled && result.refusalCode === 'bundle-in-use') {
+              const targetRowDropped = bundlesDroppedFromProfile(
+                manifestBefore, config.profile, activeProfileDir,
+                new Set(removedDeclaration === null ? [] : [removedDeclaration.name]),
+              ).includes(name)
+              if (targetRowDropped && addProfileBundle(activeProfileDir, name)) {
+                logEvent('warn', 'update-bundles-restored',
+                  `${name}: the desktop app removed its bundle row before refusing the update (bundle-in-use) — restored it so the plugin still loads on the next boot (#935)`)
+              }
+            }
             logEvent(ok || cancelled ? 'info' : 'error', 'update',
               `${name} -> ${target} exit=${String(result.exitCode)}${result.timedOut ? ' TIMEOUT' : ''}${cancelled ? ' CANCELLED' : ''}${stale ? ` STALE(${staleReason ?? 'unknown'})` : ''}${ok || cancelled ? '' : ` err=${failureDetail(result)}`}`)
             // A user-cancelled run is a quiet outcome, not an error.
@@ -6355,7 +6373,13 @@ sendJson(response, 200, { updates })
               // (a 404 for this package's own download: the classifier names
               // the last path segment, the tarball file for that URL form).
               const ownTarball = `${plainTarget.slice(plainTarget.lastIndexOf('/') + 1)}-${String(registryLatest)}.tgz`
-              const notOnMirror = (failure?.code === 'no-matching-version' && aboutThisPackage)
+              // `exact-version-missing` (#927) is the same lag shape with a
+              // clearer sentence; install still falls back to the bare name
+              // after withHoistRecovery's one same-argv retry loses.
+              const notOnMirror = (
+                (failure?.code === 'no-matching-version' || failure?.code === 'exact-version-missing')
+                && aboutThisPackage
+              )
                 || (failure?.code === 'fetch-404' && (failure.pkg === plainTarget || failure.pkg === ownTarball))
               if (heldBack || notOnMirror) {
                 // The user asked for the young release anyway. That request is
