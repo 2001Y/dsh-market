@@ -1056,7 +1056,10 @@ describe('flat Desktop host consumers (#553)', () => {
       expect(updated.json.hostIncompatible).toBeUndefined()
     } else {
       expect(updated.status).toBe(400)
-      expect(updated.json.hostIncompatible).toMatchObject({ hostVersion: expectedVersion, requirement: '>=0.1.1-rc.2' })
+      // #923: the update dialog has no catalog entry to fall back to, so the
+      // refusal must carry the npm name itself or the compatible-version
+      // search never runs.
+      expect(updated.json.hostIncompatible).toMatchObject({ hostVersion: expectedVersion, requirement: '>=0.1.1-rc.2', npmName: 'dsh-loop' })
       expect(fake.calls.slice(callsBeforeUpdate).filter(args => args.includes('add'))).toEqual([])
       expect(installedSpec('dsh-loop')).toBe('^1.0.0')
     }
@@ -2870,6 +2873,20 @@ describe('update flow — no npm publishing required', () => {
     const after = JSON.parse(readFileSync(join(fake.profileDir, 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }
     // The plugin still loads on the next boot; the failure is unchanged.
     expect(after.dsh?.profile?.bundles).toContain('dsh-loop')
+  })
+
+  it('writes the update intent before the command runs (#928)', async () => {
+    // An update is remove-then-add. If the host dies between them the plugin
+    // is simply gone and the completion log never runs — the start entry is
+    // what lets the log answer "where did my plugin go".
+    advanceNpmLatest('1.2.0')
+
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+
+    expect(r.status).toBe(200)
+    const logs = await bed.dispatch('GET', '/dsh-market/logs')
+    expect(logs.text).toContain('update-start')
+    expect(logs.text).toContain('dsh-loop -> dsh-loop@1.2.0')
   })
 
   it('keeps an exact route pin authoritative over a mismatched Desktop resolvedNpmVersion (#496)', async () => {
@@ -8654,7 +8671,10 @@ describe('a pinned install is judged on its own release, not on latest (#581)', 
 
     const refused = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop', version: '1.0.0' })
     expect(refused.status).toBe(400)
-    expect(refused.json.hostIncompatible).toMatchObject({ version: '1.0.0', requirement: '>=99.0.0' })
+    // #923: the dialog's "find a compatible version" search is keyed by the
+    // npm name; the update branch had no fallback, so a missing field left it
+    // with nothing to search for.
+    expect(refused.json.hostIncompatible).toMatchObject({ version: '1.0.0', requirement: '>=99.0.0', npmName: 'dsh-loop' })
     expect(fake.calls.filter(call => call[0] === 'add')).toEqual([])
   })
 })
