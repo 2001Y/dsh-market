@@ -103,6 +103,12 @@ const fake = vi.hoisted(() => ({
   buildScriptOutputOnce: '',
 /** Fail the next add with exit 1 and this stderr (e.g. ERR_PNPM_IGNORED_BUILDS, #68/#69). */
   failNextAddStderrOnce: '',
+  /**
+   * How many consecutive adds `failNextAddStderrOnce` applies to before it
+   * clears. Default 1. Set to 2 for #927's same-argv retry then the route's
+   * bare-name fallback (#594).
+   */
+  failNextAddStderrTimes: 1,
   /** Written to pnpm-lock.yaml just before failNextAddStderrOnce fails the add (#701). */
   lockOnFailure: null as string | null,
   /**
@@ -350,7 +356,11 @@ vi.mock('../src/dsh-cli.ts', () => {
     // cmd === 'add'
     if (fake.failNextAddStderrOnce !== '') {
       const stderr = fake.failNextAddStderrOnce
-      fake.failNextAddStderrOnce = ''
+      fake.failNextAddStderrTimes -= 1
+      if (fake.failNextAddStderrTimes <= 0) {
+        fake.failNextAddStderrOnce = ''
+        fake.failNextAddStderrTimes = 1
+      }
       // pnpm writes the lockfile before it links; a crash between the two
       // leaves the new lock behind a package.json that never got the entry.
       if (fake.lockOnFailure !== null) writeFileSync(join(fake.profileDir, 'pnpm-lock.yaml'), fake.lockOnFailure)
@@ -910,6 +920,7 @@ beforeEach(() => {
   fake.cancelClears = null
   fake.buildScriptOutputOnce = ''
   fake.failNextAddStderrOnce = ''
+  fake.failNextAddStderrTimes = 1
   fake.failAfterWriteStderrOnce = ''
   fake.preserveManifestOnNextAdd = false
   fake.artifactContentsOnNextAdd = null
@@ -1529,18 +1540,52 @@ describe('install flow', () => {
     expect(fake.calls.filter(call => call[0] === 'add')).toEqual([['add', 'dsh-loop@1.0.0']])
   })
 
-  it('falls back to the bare name when the profile registry has not caught up with the pinned latest (#594)', async () => {
+  it('keeps the pinned latest when the same-argv retry finds it after a one-shot packument miss (#927)', async () => {
     fake.npm['dsh-loop'] = { latest: '1.3.0', versions: { '1.3.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
-    // A mirror behind registry.npmjs.org: the pinned version is not there yet.
+    // Lag cleared between the two attempts (the reporter's later retry).
     fake.failNextAddStderrOnce = 'ERR_PNPM_NO_MATCHING_VERSION  No matching version found for dsh-loop@1.3.0 while fetching it from https://registry.npmmirror.com/'
 
     const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
 
     expect(r.status).toBe(200)
     expect(r.json.ok).toBe(true)
-    expect(fake.calls.filter(call => call[0] === 'add')).toEqual([['add', 'dsh-loop@1.3.0'], ['add', 'dsh-loop']])
+    expect(fake.calls.filter(call => call[0] === 'add')).toEqual([
+      ['add', 'dsh-loop@1.3.0'],
+      ['add', 'dsh-loop@1.3.0'],
+    ])
     const installed = JSON.parse(readFileSync(join(fake.profileDir, 'node_modules', 'dsh-loop', 'package.json'), 'utf8')) as { version?: string }
     expect(installed.version).toBe('1.3.0')
+  })
+
+  it('falls back to the bare name when the exact pin stays missing after the same-argv retry (#594, #927)', async () => {
+    fake.npm['dsh-loop'] = {
+      latest: '1.3.0',
+      versions: {
+        '1.2.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+        '1.3.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+      },
+    }
+    fake.releaseHold = { mature: '1.2.0', strict: false }
+    // Pin fails, withHoistRecovery retries the same pin and loses again, then
+    // the install route's notOnMirror path takes the bare name (#594).
+    fake.failNextAddStderrOnce = [
+      'ERR_PNPM_NO_MATCHING_VERSION  No matching version found for dsh-loop@1.3.0 while fetching it from https://registry.npmmirror.com/',
+      'The latest release of dsh-loop is "1.2.0".',
+    ].join('\n')
+    fake.failNextAddStderrTimes = 2
+
+    const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+
+    expect(r.status).toBe(200)
+    expect(r.json.ok).toBe(true)
+    expect(fake.calls.filter(call => call[0] === 'add')).toEqual([
+      ['add', 'dsh-loop@1.3.0'],
+      ['add', 'dsh-loop@1.3.0'],
+      ['add', 'dsh-loop'],
+    ])
+    expect(installedSpec('dsh-loop')).toBe('^1.2.0')
+    const installed = JSON.parse(readFileSync(join(fake.profileDir, 'node_modules', 'dsh-loop', 'package.json'), 'utf8')) as { version?: string }
+    expect(installed.version).toBe('1.2.0')
   })
 
   it('leaves a non-semver latest and a github target alone (#594)', async () => {

@@ -6355,7 +6355,13 @@ sendJson(response, 200, { updates })
               // (a 404 for this package's own download: the classifier names
               // the last path segment, the tarball file for that URL form).
               const ownTarball = `${plainTarget.slice(plainTarget.lastIndexOf('/') + 1)}-${String(registryLatest)}.tgz`
-              const notOnMirror = (failure?.code === 'no-matching-version' && aboutThisPackage)
+              // `exact-version-missing` (#927) is the same lag shape with a
+              // clearer sentence; install still falls back to the bare name
+              // after withHoistRecovery's one same-argv retry loses.
+              const notOnMirror = (
+                (failure?.code === 'no-matching-version' || failure?.code === 'exact-version-missing')
+                && aboutThisPackage
+              )
                 || (failure?.code === 'fetch-404' && (failure.pkg === plainTarget || failure.pkg === ownTarball))
               if (heldBack || notOnMirror) {
                 // The user asked for the young release anyway. That request is

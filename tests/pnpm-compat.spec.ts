@@ -728,6 +728,30 @@ describe('ERR_PNPM_NO_MATCHING_VERSION — host peer with only pre-releases (#56
   it('still names the plain-404 shape as fetch-404 (unchanged)', () => {
     expect(classifyPnpmFailure('[ERR_PNPM_FETCH_404] GET https://registry.npmjs.org/ghost: Not Found - 404')?.code).toBe('fetch-404')
   })
+
+  it('names an exact pin the registry cannot see yet — not "never published" (#927)', () => {
+    // Measured shape from #927: market pinned @1.1.3 from /latest; pnpm's
+    // packument on the same Tencent mirror still stopped at 1.1.2.
+    const output = [
+      '[ERR_PNPM_NO_MATCHING_VERSION] No matching version found for @michengai/dsh-archive-manager@1.1.3 while fetching it from https://mirrors.cloud.tencent.com/npm/',
+      'The latest release of @michengai/dsh-archive-manager is "1.1.2". Published at 2026/10/18 19:45:43',
+    ].join('\n')
+    const failure = classifyPnpmFailure(output)
+    expect(failure?.code).toBe('exact-version-missing')
+    expect(failure?.pkg).toBe('@michengai/dsh-archive-manager')
+    expect(failure?.message).toContain('@michengai/dsh-archive-manager@1.1.3')
+    expect(failure?.message).toContain('1.1.2')
+    expect(failure?.message).toContain('还没同步')
+    expect(failure?.message).toContain('下载区域')
+    expect(failure?.message).toContain('Global')
+    expect(failure?.message).not.toContain('通常是该版本被弃用或从未发布')
+    // A real range with no match stays on the generic withdrawn wording.
+    const range = classifyPnpmFailure(
+      'ERR_PNPM_NO_MATCHING_VERSION  No matching version found for some-dep@^9.0.0 while fetching it from https://registry.npmjs.org/',
+    )
+    expect(range?.code).toBe('no-matching-version')
+    expect(range?.message).toContain('通常是该版本被弃用或从未发布')
+  })
 })
 
 describe('provisionHint (#142 / #108 / #32)', () => {
