@@ -2818,6 +2818,60 @@ describe('update flow — no npm publishing required', () => {
     expect(String(r.json.error)).toContain('market cannot update itself')
   })
 
+  it('restores the bundle row the desktop manager dropped before refusing with bundle-in-use (#935)', async () => {
+    // removeBundle() writes the row out of dsh.profile.bundles FIRST and only
+    // then checks the live fiber. The refusal therefore leaves the plugin
+    // declared but unlisted — it runs this session and silently fails to
+    // load next boot. Restore this operation's own row; nothing else.
+    advanceNpmLatest('1.2.0')
+    // The seed install leaves the dependency; a boot-loaded plugin also has
+    // its bundle row, which is what the manager will remove before refusing.
+    const seeded = readManifestAt(fake.profileDir)
+    writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify({
+      ...seeded,
+      dsh: { ...seeded.dsh, profile: { ...seeded.dsh?.profile, bundles: ['dsh-loop'] } },
+    }))
+    bed.dispose()
+    bed = createTestbed({}, {
+      runPlugin: async (_profile, args) => {
+        if (args[0] === 'add') {
+          const manifestPath = join(fake.profileDir, 'package.json')
+          const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }
+          manifest.dsh ??= {}
+          manifest.dsh.profile ??= {}
+          manifest.dsh.profile.bundles = (manifest.dsh.profile.bundles ?? []).filter(bundle => bundle !== 'dsh-loop')
+          writeFileSync(manifestPath, JSON.stringify(manifest))
+          return {
+            exitCode: 1,
+            timedOut: false,
+            stdout: '',
+            stderr: '这个插件正在使用中，桌面端不允许现在移除 / the plugin is in use (bundle-in-use)',
+            cancelled: false,
+            refusalCode: 'bundle-in-use',
+            // The bridge's shape for a pre-pnpm refusal: no package result,
+            // so the update route skips its rollback — and nothing else puts
+            // the row back.
+            wroteNothing: true,
+          }
+        }
+        return { exitCode: 0, timedOut: false, stdout: '', stderr: '', cancelled: false }
+      },
+      acceptsMarketPnpmFlags: false,
+      probePnpm: () => Promise.resolve(true),
+      provisionPnpm: () => Promise.resolve({ ok: true }),
+      cancelActive: () => false,
+    })
+
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+
+    expect(r.status).toBe(502)
+    // The refusal really came from the fake manager, not from an earlier stop.
+    expect(String(r.json.error)).toContain('bundle-in-use')
+    const after = JSON.parse(readFileSync(join(fake.profileDir, 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }
+    // The plugin still loads on the next boot; the failure is unchanged.
+    expect(after.dsh?.profile?.bundles).toContain('dsh-loop')
+  })
+
   it('keeps an exact route pin authoritative over a mismatched Desktop resolvedNpmVersion (#496)', async () => {
     // The route already sent name@1.2.0. A host that reports a different
     // resolvedNpmVersion (and whose pnpm tree somehow landed there) must
