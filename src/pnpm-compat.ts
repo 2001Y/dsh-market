@@ -16,7 +16,7 @@
 
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-
+import { CHINA_NPM_REGISTRY } from './regions.ts'
 
 /**
  * Decide the argv for a `dsh plugin <add|remove> …` call in the given profile.
@@ -87,6 +87,24 @@ export interface PnpmFailure {
  */
 export function isTransientPnpmFailure(output: string): boolean {
   return /ERR_PNPM_FETCH_5\d\d|ERR_PNPM_META_FETCH_FAIL|FetchError|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|network timeout/i.test(output)
+}
+
+/**
+ * China download route reset a package tarball mid-download (#926).
+ *
+ * Same-argv retry (#83) hits the same host again, so the generic "try again
+ * shortly" advice is wrong. Matched on ONE line: the China npm registry
+ * tarball URL and the reset must appear together — a China-mirror `.tgz`
+ * mention plus an unrelated `ECONNRESET` elsewhere (e.g. codeload) must not
+ * push the user to switch Download region.
+ */
+function isChinaMirrorTarballReset(output: string): boolean {
+  const hostPath = CHINA_NPM_REGISTRY.replace(/^https?:\/\//i, '')
+  const escaped = hostPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(
+    `${escaped}/\\S+/-/\\S+\\.tgz[^\\n]*(?:ECONNRESET|socket hang up)`,
+    'i',
+  ).test(output)
 }
 
 /**
@@ -746,6 +764,16 @@ export function classifyPnpmFailure(output: string, exitCode?: number | null): P
   // a plain retry to succeed seconds later. withHoistRecovery retries once;
   // this message covers the case where the retry lost too.
   if (isTransientPnpmFailure(output)) {
+    // Keep code `transient-network` so withHoistRecovery still does the #83
+    // same-argv retry; only the final message changes when that retry lost
+    // against the China mirror's tarball host (#926).
+    if (isChinaMirrorTarballReset(output)) {
+      return {
+        code: 'transient-network',
+        recoverable: false,
+        message: '中国大陆下载线路在拉这个安装包时被断开了。再走同一条线路通常没用。打开设置，把「下载区域」改成「全球」，然后再装一次 / the China mainland download route was interrupted while fetching this package. Trying the same route again usually will not help. Open Settings, switch Download region to Global, and install again',
+      }
+    }
     return {
       code: 'transient-network',
       recoverable: false,
