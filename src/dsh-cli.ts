@@ -512,6 +512,18 @@ export interface InstallResult {
    */
   wroteNothing?: boolean
   /**
+   * The desktop manager stopped answering, and the profile may be
+   * half-updated: a removal it was asked to perform can already be on disk.
+   *
+   * The update route normally answers a failed run by restoring the previous
+   * build through the same manager. That is exactly wrong here — the manager
+   * is what stopped answering, and its profile write lock is still held — so
+   * the route leaves the profile alone and the market's journal
+   * (`src/pending-updates.ts`) finishes or undoes the removal on the next
+   * start (#928).
+   */
+  repairOnRestart?: boolean
+  /**
    * The host's own refusal code, when it stopped before running pnpm.
    *
    * The desktop manager answers with structured codes — `already-installed`,

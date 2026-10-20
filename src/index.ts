@@ -15,6 +15,17 @@ import type { AgentsServiceLike } from './agents.ts'
 
 export const name = 'dsh-market'
 
+/**
+ * How long after the market mounts an interrupted update is repaired.
+ *
+ * The market mounts while the composition is still starting its entries, and
+ * an install at that moment would reconcile the profile underneath the boot.
+ * The desktop host's own replay wait is the same order of magnitude (8 s), so
+ * this waits that long once, then fixes what a previous start left behind
+ * (#928). Nothing happens when the journal is empty, which is the normal case.
+ */
+const PENDING_UPDATE_REPAIR_DELAY_MS = 8_000
+
 /** Optional cordis.yml configuration; profile defaults to `web`. */
 export type Config = Partial<Pick<MarketConfig, 'profile' | 'allowRestart' | 'maxSnapshots' | 'buildEnv'>>
 
@@ -279,7 +290,15 @@ export function apply(ctx: Context, config?: Config): void {
         host.effect(() => {
           const restoreTrustedHosts = useTrustedHosts(ctx)
           const disposeRoutes = mountMarketRoutes(host, resolved, runtime, agentsLookupOf(ctx))
+          const repairTimer = setTimeout(() => {
+            void runtime.repairPendingUpdates().then(report => {
+              if (report.reinstalled.length === 0 && report.failed.length === 0) return
+              console.warn(`dsh-market: ${report.reinstalled.length} interrupted update(s) reinstalled, ${report.failed.length} still pending`)
+            })
+          }, PENDING_UPDATE_REPAIR_DELAY_MS)
+          repairTimer.unref?.()
           return async () => {
+            clearTimeout(repairTimer)
             disposeRoutes()
             restoreTrustedHosts()
             await runtime.dispose()
