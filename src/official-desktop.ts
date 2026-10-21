@@ -2,13 +2,40 @@
 
 import { randomUUID } from 'node:crypto'
 import { progress, TARGET_RE, type DesktopPluginRuntime, type InstallResult } from './dsh-cli.ts'
+import {
+  DeadlineExceeded,
+  PendingUpdateJournal,
+  repairInterruptedUpdates,
+  withDeadline,
+  type RepairReport,
+} from './pending-updates.ts'
+import { profileDir, readInstalledVersion } from './profile.ts'
 import { activeRegion, DEFAULT_NPM_REGISTRY, routesFor } from './regions.ts'
 
 interface ManagedResult {
   application: string
   error?: unknown
   packageResult?: { exitCode: number | null; output?: string }
+  /**
+   * The install never settled and the profile may be half-updated: the route
+   * must not try to "restore" it through the same stuck manager.
+   */
+  repairOnRestart?: boolean
 }
+
+/**
+ * How long the desktop manager gets before the market stops waiting.
+ *
+ * The host's reconciliation has no deadline of its own; when a plugin's
+ * teardown or start never settles, `removeBundle`/`installBundle` never
+ * resolve and the operation stays "updating" forever while holding the
+ * profile's write lock. These deadlines cannot cancel the host, but they end
+ * the market's wait, and the journal (`./pending-updates.ts`) makes the next
+ * start finish the job. Removal is the short step (pnpm unlink + unload);
+ * installation may legitimately download and build, so it gets the longer one.
+ */
+const REMOVE_DEADLINE_MS = 90_000
+const INSTALL_DEADLINE_MS = 300_000
 
 export interface OfficialPluginManagerLike {
   installBundle(spec: string, options?: { requestId?: string; registry?: string }): Promise<ManagedResult>
@@ -109,6 +136,10 @@ const REFUSAL_COPY: Record<string, { zh: string; en: string }> = {
     zh: '这个版本与当前 DSH 不兼容，宿主拒绝安装',
     en: 'this version is not compatible with the running DSH, so the host refused it',
   },
+  'update-incomplete': {
+    zh: '桌面端没有在限定时间内完成这次更新：插件可能已经被移除，新版本却还没装上。重新打开 DSH 后市场会自动补装；也可以现在从「设置 → 插件」重试',
+    en: 'the desktop app did not finish this update in time: the plugin may already be removed while its replacement never installed. Reopen DSH and the market will finish the install, or retry from Settings → Plugins now',
+  },
 }
 
 /**
@@ -183,6 +214,26 @@ export function registryNameOf(spec: string): string | undefined {
   return /^(@[A-Za-z0-9._~-]+\/)?[A-Za-z0-9._~-]+$/.test(name) ? name : undefined
 }
 
+/** Exact version from a registry spec, or '' when the spec is a range or tag. */
+function targetVersionOf(spec: string): string {
+  if (registryNameOf(spec) === undefined) return ''
+  const at = spec.indexOf('@', 1)
+  const version = at === -1 ? '' : spec.slice(at + 1)
+  return /^\d+\.\d+\.\d+(?:[-+].*)?$/.test(version) ? version : ''
+}
+
+/** A manager call that never settled: the profile may be half-updated. */
+function interrupted(): ManagedResult {
+  return { application: 'failed', error: { code: 'update-incomplete' }, repairOnRestart: true }
+}
+
+/** What an update needs to journal itself and to be repaired later. */
+interface UpdateContext {
+  profile: string
+  profileDirectory: string
+  journal: PendingUpdateJournal
+}
+
 /**
  * Install a spec, and when the manager refuses it because that package is
  * already in the profile, remove the installed copy first and install again.
@@ -193,11 +244,17 @@ export function registryNameOf(spec: string): string | undefined {
  * `removeBundle` then install — because its manager has no in-place update.
  * Without this the market could not update ANY installed plugin on that host,
  * itself included: users stuck on a broken build could not fetch the fix.
+ *
+ * The two steps are not atomic and the first one writes the profile, so the
+ * pair is journaled before it starts and bounded by a deadline (#928). If the
+ * host never answers, the market stops waiting and the next start finishes or
+ * undoes the removal from that record instead of leaving the plugin gone.
  */
 async function installOrReinstall(
   manager: OfficialPluginManagerLike,
   spec: string,
   options: { requestId?: string; registry?: string },
+  context?: UpdateContext,
 ): Promise<ManagedResult> {
   const install = (): Promise<ManagedResult> => manager.installBundle(spec, options)
   let first: ManagedResult
@@ -216,11 +273,63 @@ async function installOrReinstall(
   if (SELF_NAMES.has(name)) {
     return { application: 'failed', error: { code: 'market-self-update', message: selfUpdateMessage(spec) } }
   }
+  const record = context === undefined
+    ? undefined
+    : context.journal.begin({
+      profile: context.profile,
+      name,
+      from: readInstalledVersion(context.profile, name, context.profileDirectory) ?? '',
+      to: targetVersionOf(spec),
+      spec,
+    })
   progress.lastLine = 'Removing the installed copy so the desktop app can install the new version'
-  const removed = await manager.removeBundle(name)
-  if (removed.application === 'failed' || removed.application === 'cancelled') return removed
+  let removed: ManagedResult
+  try {
+    removed = await withDeadline(manager.removeBundle(name), REMOVE_DEADLINE_MS, `remove ${name}`)
+  } catch (error) {
+    if (error instanceof DeadlineExceeded) return interrupted()
+    if (record !== undefined) context?.journal.finish(record.id)
+    throw error
+  }
+  if (removed.application === 'failed' || removed.application === 'cancelled') {
+    // Nothing was unloaded, so there is nothing for a later start to repair.
+    if (record !== undefined) context?.journal.finish(record.id)
+    return removed
+  }
+  if (record !== undefined) context?.journal.mark(record.id, 'installing')
   progress.lastLine = 'Installing the new version'
-  return install()
+  try {
+    const installed = await withDeadline(install(), INSTALL_DEADLINE_MS, `install ${spec}`)
+    if (installed.application === 'failed' || installed.application === 'cancelled') {
+      // The replacement did not land; the record stays so the next start can
+      // put it back rather than leaving the package gone.
+      return installed
+    }
+    if (record !== undefined) context?.journal.finish(record.id)
+    return installed
+  } catch (error) {
+    if (error instanceof DeadlineExceeded) return interrupted()
+    throw error
+  }
+}
+
+/** The official runtime's own surface, plus the repair a later start owes the profile. */
+export interface OfficialDesktopRuntime extends DesktopPluginRuntime {
+  /**
+   * Finish or undo an update an earlier start left half-applied (#928).
+   * Returns after every record settled or was found unrepairable; never throws.
+   */
+  repairPendingUpdates(): Promise<RepairReport>
+}
+
+/** Resolve the profile directory without making an invalid name a construction failure. */
+function safeProfileDirectory(profile: string, explicit?: string): string | undefined {
+  if (explicit !== undefined) return explicit
+  try {
+    return profileDir(profile)
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -240,14 +349,22 @@ export function createOfficialDesktopRuntime(
   // because an explicitly configured `profile: desktop` may be the only thing
   // that names this profile, with no launcher directory to go with it (#744).
   _profileDirectory?: string,
-): DesktopPluginRuntime {
+): OfficialDesktopRuntime {
   let disposed = false
+  let repairing = false
   let active: { requestId?: string; cancelled: boolean; done: Promise<InstallResult> } | undefined
+  const directory = safeProfileDirectory(profileName, _profileDirectory)
+  const journal = directory === undefined ? undefined : PendingUpdateJournal.forProfile(directory)
+  const updateContext: UpdateContext | undefined = directory === undefined || journal === undefined
+    ? undefined
+    : { profile: profileName, profileDirectory: directory, journal }
 
   const runPlugin: DesktopPluginRuntime['runPlugin'] = (profile, argv) => {
     if (disposed) return Promise.resolve(failure('official desktop plugin runtime is disposed', 127))
     if (profile !== profileName) return Promise.resolve(failure('refusing to change a different profile', 127))
-    if (active !== undefined) return Promise.resolve({ ...failure('another plugin operation is running', 127), busy: true })
+    // A repair uses the same manager; overlapping the two would race the
+    // profile's write lock and the route's single-operation rule.
+    if (active !== undefined || repairing) return Promise.resolve({ ...failure('another plugin operation is running', 127), busy: true })
     const manager = managerLookup()
     if (manager === undefined
       || typeof manager.installBundle !== 'function'
@@ -297,9 +414,12 @@ export function createOfficialDesktopRuntime(
       // The default route leaves the host's own npm configuration in charge.
       const registry = routesFor(activeRegion()).npmRegistry
       const options = { requestId, ...(registry === DEFAULT_NPM_REGISTRY ? {} : { registry }) }
+      // An explicit uninstall supersedes an interrupted update for the same
+      // package: the journal must not put back what the user just removed.
+      if (command === 'remove') updateContext?.journal.forget(profileName, target)
       operation = command === 'remove'
         ? manager.removeBundle(target)
-        : installOrReinstall(manager, spec, options)
+        : installOrReinstall(manager, spec, options, updateContext)
     } catch (error) {
       progress.active = false
       return Promise.resolve(failure(detail(error), 127))
@@ -320,6 +440,10 @@ export function createOfficialDesktopRuntime(
       ].filter(Boolean).join('\n')
       const message = ok ? '' : detail(result.error)
       if (!ok) progress.error = message
+      // The manager never settled: the profile may be half-updated, so this
+      // is neither "nothing happened" nor something the route can restore
+      // through the same stuck manager (#928).
+      const repairOnRestart = !ok && result.repairOnRestart === true
       return {
         // `||`, not `??`: a failure at stage `enable` follows a SUCCESSFUL
         // pnpm step, so packageResult.exitCode is 0 there — and every route
@@ -333,7 +457,8 @@ export function createOfficialDesktopRuntime(
         // profile is untouched, and the route must not try to "restore" it.
         // A pre-install host check (#912) is the same shape even when the
         // manager attached a package result to its refusal.
-        wroteNothing: !ok && (result.packageResult === undefined || prePnpmHostFailure(result)),
+        wroteNothing: !ok && !repairOnRestart && (result.packageResult === undefined || prePnpmHostFailure(result)),
+        ...(repairOnRestart ? { repairOnRestart: true } : {}),
         // The manager's own code, kept machine-readable (#909): a client can
         // tell a self-update refusal from an ordinary failure.
         ...(ok ? {} : { refusalCode: managementCode(result.error) }),
@@ -354,8 +479,25 @@ export function createOfficialDesktopRuntime(
     return current.done
   }
 
+  const repairPendingUpdates = async (): Promise<RepairReport> => {
+    const empty: RepairReport = { reinstalled: [], finished: [], failed: [] }
+    if (disposed || repairing || active !== undefined) return empty
+    const manager = managerLookup()
+    if (manager === undefined || directory === undefined || journal === undefined) return empty
+    repairing = true
+    try {
+      return await repairInterruptedUpdates({ profile: profileName, profileDirectory: directory, manager, journal })
+    } catch (error) {
+      console.warn('dsh-market: could not repair an interrupted update', error)
+      return empty
+    } finally {
+      repairing = false
+    }
+  }
+
   return {
     runPlugin,
+    repairPendingUpdates,
     probePnpm: async () => managerLookup() !== undefined,
     provisionPnpm: async () => ({ ok: managerLookup() !== undefined, hint: 'Use the official desktop plugin manager' }),
     cancelActive: () => {

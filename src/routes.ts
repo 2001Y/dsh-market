@@ -4831,8 +4831,21 @@ sendJson(response, 200, { updates })
                 `${name}: ${reason}; removed from the profile's dependencies and dsh.profile.bundles so the next start can compose — reinstall it from the market after quitting DSH`
                 + (dropped ? '' : ' (nothing to drop: the profile did not declare it under either key)'))
             }
+            if (result.repairOnRestart === true) {
+              // The manager stopped answering and may already have removed the
+              // package. Restoring through it would block on the profile lock
+              // it still holds, so the journal repairs the profile on the next
+              // start instead (#928).
+              logEvent('warn', 'update',
+                `${name}: the desktop manager did not settle; the removal will be finished or undone on the next start`)
+            }
             if ((result.exitCode !== 0 || result.timedOut) && !cancelled && result.busy !== true
               && !pnpmNeverStarted(result)
+              // The manager never settled (#928): the profile may be
+              // half-updated, and its write lock is still held by whatever
+              // stopped answering. Nothing the route can do here can restore
+              // it; the market's journal does that on the next start.
+              && result.repairOnRestart !== true
               // The host refused before running pnpm (#897): nothing was
               // written, so there is nothing to restore — and the "could not
               // verify restoration, inspect this profile" warning this block
@@ -5235,7 +5248,9 @@ sendJson(response, 200, { updates })
               // retried" classifier). Prefer that over pnpmFailureMessage,
               // which would re-surface the classifier alone — the client
               // shows body.error first.
-              error: versionFailureError ?? renamedError ?? trialError ?? brokenEntryError ?? hardFailureRollbackError ?? staleError
+              error: versionFailureError ?? renamedError ?? trialError ?? brokenEntryError
+                ?? (result.repairOnRestart === true && result.stderr.trim() !== '' ? result.stderr.trim() : undefined)
+                ?? hardFailureRollbackError ?? staleError
                 ?? (result.wroteNothing === true && result.stderr.trim() !== '' ? result.stderr.trim() : undefined)
                 ?? (pnpmRefusedYoungRelease(result) && result.stderr.trim() !== '' ? result.stderr.trim() : undefined)
                 ?? pnpmFailureMessage(result) ?? undefined,

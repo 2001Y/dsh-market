@@ -1,8 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createOfficialDesktopRuntime, type OfficialPluginManagerLike } from '../src/official-desktop.ts'
+import { PendingUpdateJournal, pendingUpdatesFile } from '../src/pending-updates.ts'
 import { withHoistRecovery } from '../src/install.ts'
 import { routesFor, setActiveRegion } from '../src/regions.ts'
 
@@ -25,6 +26,14 @@ afterEach(() => {
   vi.unstubAllEnvs()
   for (const dir of roots.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
+
+
+/** Put a package in the profile's node_modules, the way pnpm would have. */
+function installed(dir: string, name: string, version: string): void {
+  const packageDir = join(dir, 'node_modules', name)
+  mkdirSync(packageDir, { recursive: true })
+  writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name, version }))
+}
 
 function manager(): OfficialPluginManagerLike & {
   installBundle: ReturnType<typeof vi.fn>
@@ -379,5 +388,100 @@ describe('official Electron profile runtime', () => {
     const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
     // Unrecognized codes stay as the manager wrote them.
     await expect(runtime.runPlugin('desktop', ['add', 'example'])).resolves.toMatchObject({ exitCode: 1, stderr: '{"code":"network"}' })
+  })
+
+  it('journals an update before removing and clears the record once the reinstall settles (#928)', async () => {
+    // The two-step update writes the profile at the removal, so the record has
+    // to exist BEFORE `removeBundle` is called — a record written after it
+    // would never describe the interruption that loses the plugin.
+    const dir = profile()
+    installed(dir, 'example', '1.0.0')
+    const journalFile = pendingUpdatesFile(dir)
+    const service = manager()
+    service.installBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'already-installed' }, packageResult: { exitCode: 1, output: '' } })
+      .mockResolvedValueOnce({ application: 'applied', packageResult: { exitCode: 0, output: 'installed 2.0.0' } })
+    let duringRemoval: unknown
+    service.removeBundle.mockImplementationOnce(async () => {
+      duringRemoval = JSON.parse(readFileSync(journalFile, 'utf8'))
+      return { application: 'applied', packageResult: { exitCode: 0, output: 'removed' } }
+    })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', dir)
+    try {
+      await expect(runtime.runPlugin('desktop', ['add', 'example@2.0.0'])).resolves.toMatchObject({ exitCode: 0 })
+      expect(duringRemoval).toMatchObject({ operations: [expect.objectContaining({ name: 'example', from: '1.0.0', to: '2.0.0', step: 'removing' })] })
+      // The install settled, so the next start has nothing to repair.
+      expect(JSON.parse(readFileSync(journalFile, 'utf8')).operations).toEqual([])
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('stops waiting when the manager never settles and asks the next start to repair (#928)', async () => {
+    // The reported shape: the removal wrote the profile, the host's reload
+    // never answered, and the market kept the operation "updating" forever
+    // while holding the profile lock. The deadline ends the wait; the record
+    // stays for the next start.
+    vi.useFakeTimers()
+    const dir = profile()
+    installed(dir, 'example', '1.0.0')
+    const service = manager()
+    service.installBundle.mockResolvedValueOnce({ application: 'failed', error: { code: 'already-installed' }, packageResult: { exitCode: 1, output: '' } })
+    service.removeBundle.mockImplementationOnce(() => new Promise(() => {}))
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', dir)
+    try {
+      const running = runtime.runPlugin('desktop', ['add', 'example@2.0.0'])
+      await vi.advanceTimersByTimeAsync(90_000)
+      const result = await running
+      expect(result).toMatchObject({
+        exitCode: 1,
+        repairOnRestart: true,
+        refusalCode: 'update-incomplete',
+        // Not "nothing was written": the removal may already be on disk.
+        wroteNothing: false,
+      })
+      expect(result.stderr).toContain('重新打开 DSH')
+      expect(result.stderr).toContain('(update-incomplete)')
+      const journal = JSON.parse(readFileSync(pendingUpdatesFile(dir), 'utf8'))
+      expect(journal.operations).toMatchObject([{ name: 'example', step: 'removing' }])
+    } finally {
+      vi.useRealTimers()
+      await runtime.dispose()
+    }
+  })
+
+  it('drops a pending repair when the user uninstalls the package explicitly (#928)', async () => {
+    const dir = profile()
+    const journal = new PendingUpdateJournal(pendingUpdatesFile(dir))
+    journal.begin({ profile: 'desktop', name: 'example', from: '1.0.0', to: '2.0.0', spec: 'example@2.0.0' })
+    const service = manager()
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', dir)
+    try {
+      await expect(runtime.runPlugin('desktop', ['remove', 'example'])).resolves.toMatchObject({ exitCode: 0 })
+      expect(service.removeBundle).toHaveBeenCalledWith('example')
+      expect(new PendingUpdateJournal(pendingUpdatesFile(dir)).list()).toEqual([])
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('repairs an interrupted update on demand through the runtime (#928)', async () => {
+    const dir = profile()
+    const journal = new PendingUpdateJournal(pendingUpdatesFile(dir))
+    const record = journal.begin({ profile: 'desktop', name: 'example', from: '1.0.0', to: '2.0.0', spec: 'example@2.0.0' })
+    journal.mark(record.id, 'installing')
+    const service = manager()
+    service.installBundle.mockImplementationOnce(async () => {
+      installed(dir, 'example', '2.0.0')
+      return { application: 'applied', packageResult: { exitCode: 0, output: 'installed 2.0.0' } }
+    })
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', dir)
+    try {
+      await expect(runtime.repairPendingUpdates()).resolves.toMatchObject({ reinstalled: ['example'], failed: [] })
+      expect(service.installBundle).toHaveBeenCalledWith('example@2.0.0', { requestId: expect.any(String) })
+      expect(existsSync(pendingUpdatesFile(dir))).toBe(true)
+      expect(JSON.parse(readFileSync(pendingUpdatesFile(dir), 'utf8')).operations).toEqual([])
+    } finally {
+      await runtime.dispose()
+    }
   })
 })

@@ -188,4 +188,20 @@ describe('public update API v1 operation model', () => {
       failure: { code: 'market-self-update', retryable: false },
     })
   })
+
+  it('forwards update-incomplete so a caller can tell it from an ordinary failure (#928)', () => {
+    // The desktop manager stopped answering mid-update; the record survives
+    // and the next start finishes or forgets it. That is a different outcome
+    // from a failed install, and an external caller has to see the difference.
+    const store = new UpdateOperationStoreV1('boot-incomplete')
+    const op = store.create('dsh-loop', '1.2.0')
+    store.start(op.operationId)
+    expect(store.finish(op.operationId, 502, {
+      failureCode: 'update-incomplete',
+      error: 'the desktop app stopped answering; the market will finish this on the next start',
+    }, '1.1.0')).toMatchObject({
+      state: 'failed',
+      failure: { code: 'update-incomplete' },
+    })
+  })
 })
