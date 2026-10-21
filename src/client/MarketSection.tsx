@@ -1837,6 +1837,27 @@ function readHostFilterPreference(): boolean {
   try { return localStorage.getItem(HOST_FILTER_KEY) !== 'all' } catch { return true }
 }
 
+/**
+ * 最近收录 display preferences: collapsed / hidden (#940).
+ *
+ * The block only appears on the discover tab with an empty search and both
+ * filters on "all", so it cannot be avoided without changing what the user is
+ * looking at — and it costs about a quarter of the first screen. Both states
+ * are display preferences, not profile settings: since 0.1.7 the settings
+ * surface is deliberately just `allowRestart`.
+ *
+ * Same read discipline as HOST_FILTER_KEY above: an unavailable store falls
+ * back to the default, and the default is "expanded and shown".
+ */
+const RECENT_COLLAPSED_KEY = 'dshm-recent-collapsed'
+const RECENT_HIDDEN_KEY = 'dshm-recent-hidden'
+function readRecentFlag(key: string): boolean {
+  try { return localStorage.getItem(key) === '1' } catch { return false }
+}
+function writeRecentFlag(key: string, next: boolean): void {
+  try { localStorage.setItem(key, next ? '1' : '0') } catch { /* storage unavailable — the choice just won't survive a reload */ }
+}
+
 /** "不再提示" on the settings-page sidebar tip. A missing store means show it. */
 const SIDEBAR_TIP_KEY = 'dshm-sidebar-tip-dismissed'
 function readSidebarTipDismissed(): boolean {
@@ -3099,6 +3120,21 @@ export function MarketSection(props: MarketSectionProps) {
   // cards underneath.
   const [recentColumns, setRecentColumns] = useState(1)
   const hasRecent = recentlyAdded.length > 0
+  const [recentCollapsed, setRecentCollapsed] = useState(() => readRecentFlag(RECENT_COLLAPSED_KEY))
+  const [recentHidden, setRecentHidden] = useState(() => readRecentFlag(RECENT_HIDDEN_KEY))
+  const toggleRecentCollapsed = useCallback(() => {
+    const next = !recentCollapsed
+    setRecentCollapsed(next)
+    writeRecentFlag(RECENT_COLLAPSED_KEY, next)
+  }, [recentCollapsed])
+  const hideRecent = useCallback(() => {
+    setRecentHidden(true)
+    writeRecentFlag(RECENT_HIDDEN_KEY, true)
+  }, [])
+  const showRecent = useCallback(() => {
+    setRecentHidden(false)
+    writeRecentFlag(RECENT_HIDDEN_KEY, false)
+  }, [])
   useLayoutEffect(() => {
     const row = recentRowRef.current
     if (row === null || typeof ResizeObserver === 'undefined') return
@@ -3107,7 +3143,14 @@ export function MarketSection(props: MarketSectionProps) {
     })
     observer.observe(row)
     return () => observer.disconnect()
-  }, [hasRecent, loadError])
+    // recentHidden belongs in the deps: hiding unmounts the row, so `ref` is
+    // null when this effect runs and it bails out. Restoring has to re-run it,
+    // or the observer is never attached and the block stops tracking width
+    // (it reopens at whatever column count it last saw, and never follows a
+    // resize again) — the trap #940's plan 1 walks into.
+    // recentCollapsed deliberately stays out: collapsing clips in place, the
+    // element keeps its width, and the existing observer stays correct.
+  }, [hasRecent, loadError, recentHidden])
   const recentPlugins = recentlyAdded.slice(0, recentColumns * 2)
   const { currentPage, totalPages, pageSize, goToPage, changePageSize } =
     usePagination(plugins.length, [q, cat, sortField, sortDir, timeRange, compatibleWithHost], scrollToTop)
@@ -6524,13 +6567,37 @@ export function MarketSection(props: MarketSectionProps) {
                       )}
                     </div>
                     </div>
-                    {hasRecent && (
-                      <section aria-labelledby="dshm-recently-added">
-                        <h3 id="dshm-recently-added" className={css.favoritesSectionHead}>{t('recentlyAdded')}</h3>
-                        <div ref={recentRowRef} className={css.recentRow} style={{ gridTemplateColumns: `repeat(${recentColumns}, minmax(0, 1fr))` }}>
-                          {recentPlugins.map(plugin => pluginCard(plugin, `recent:${plugin.url}`))}
-                        </div>
-                      </section>
+                    {hasRecent && (recentHidden
+                      ? <button type="button" className={css.recentShow} onClick={showRecent}>
+                          <IconChevronDownOutline14 size={14} />{t('recentShow')}
+                        </button>
+                      : <section aria-labelledby="dshm-recently-added">
+                          <div className={css.recentHead}>
+                            <h3 id="dshm-recently-added" className={css.favoritesSectionHead}>
+                              <button
+                                type="button"
+                                className={css.recentToggle}
+                                aria-expanded={!recentCollapsed}
+                                aria-controls="dshm-recent-grid"
+                                onClick={toggleRecentCollapsed}
+                              >
+                                {recentCollapsed ? <IconChevronRightOutline14 size={14} /> : <IconChevronDownOutline14 size={14} />}
+                                {t('recentlyAdded')}
+                              </button>
+                            </h3>
+                            <Button variant="ghost" size="sm" className={css.recentHide} onClick={hideRecent}>{t('recentHide')}</Button>
+                          </div>
+                          {/* #940: clipped in place, never unmounted — the grid is what
+                              the column-counting ResizeObserver measures. */}
+                          <div
+                            id="dshm-recent-grid"
+                            ref={recentRowRef}
+                            className={recentCollapsed ? `${css.recentRow} ${css.recentCollapsed}` : css.recentRow}
+                            style={{ gridTemplateColumns: `repeat(${recentColumns}, minmax(0, 1fr))` }}
+                          >
+                            {recentPlugins.map(plugin => pluginCard(plugin, `recent:${plugin.url}`))}
+                          </div>
+                        </section>
                     )}
                     {plugins.length === 0
                       ? <EmptyResults blocked={pluginsAll.length > 0} t={t}

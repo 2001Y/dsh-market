@@ -8490,3 +8490,89 @@ describe('sidebar shortcut tip (#846)', () => {
     expect(screen.queryByText(en.sidebarTip)).toBeNull()
   })
 })
+
+describe('最近收录 collapses and hides without losing its column measurement (#940)', () => {
+  // The block only renders for entries added in the last 7 days, so the dates
+  // are relative to the run, not fixed literals.
+  const today = new Date().toISOString().slice(0, 10)
+  const RECENT_REGISTRY = {
+    updated: '', count: 3,
+    categories: REGISTRY.categories,
+    plugins: [
+      { name: 'dsh-loop', owner: 'alice', url: 'https://github.com/alice/dsh-loop', category: ['tools'], npm: 'dsh-loop', stars: 50, added: today, description: { en: 'Loop task runner', zh: '循环执行' }, install: '' },
+      { name: 'dsh-notify', owner: 'bob', url: 'https://github.com/bob/dsh-notify', category: 'tools', npm: null, stars: 120, added: today, description: { en: 'Desktop notifications', zh: '桌面通知' }, install: '' },
+      { name: 'whale-skin', owner: 'carol', url: 'https://github.com/carol/whale-skin', category: 'theme', npm: null, stars: 80, added: '2020-01-01', description: { en: 'Whale theme', zh: '鲸鱼主题' }, install: '' },
+    ],
+  }
+  function mount() {
+    stubFetch({ '/dsh-market/registry': { source: 'live', registry: RECENT_REGISTRY, hostVersion: '0.1.2-alpha.2' } })
+    return render(<MarketSection {...props()} />)
+  }
+  const gridOf = (container: HTMLElement) => container.querySelector('#dshm-recent-grid')
+
+  it('collapses in place and keeps the grid mounted', async () => {
+    const { container } = mount()
+    const toggle = await screen.findByRole('button', { name: new RegExp(en.recentlyAdded) })
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(gridOf(container)).toBeTruthy()
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    // The point of the change: clipped, not unmounted. Unmounting takes the
+    // measured element away from the column-counting ResizeObserver.
+    expect(gridOf(container)).toBeTruthy()
+    expect(gridOf(container)!.className).toContain(css.recentCollapsed)
+    expect(localStorage.getItem('dshm-recent-collapsed')).toBe('1')
+  })
+
+  it('hides the whole block and restores it from the one-line button', async () => {
+    const { container } = mount()
+    fireEvent.click(await screen.findByRole('button', { name: en.recentHide }))
+    expect(gridOf(container)).toBeNull()
+    expect(localStorage.getItem('dshm-recent-hidden')).toBe('1')
+    fireEvent.click(screen.getByRole('button', { name: en.recentShow }))
+    expect(gridOf(container)).toBeTruthy()
+    expect(localStorage.getItem('dshm-recent-hidden')).toBe('0')
+  })
+
+  it('remembers both choices across a remount', async () => {
+    localStorage.setItem('dshm-recent-collapsed', '1')
+    localStorage.setItem('dshm-recent-hidden', '1')
+    const { container } = mount()
+    const restore = await screen.findByRole('button', { name: en.recentShow })
+    expect(gridOf(container)).toBeNull()
+    fireEvent.click(restore)
+    expect(gridOf(container)!.className).toContain(css.recentCollapsed)
+  })
+
+  it('re-attaches the column observer after the block is hidden and shown again', async () => {
+    // An inert observer that hands the test its callback, so width changes are
+    // delivered on demand — jsdom has no layout.
+    const observers: Array<{ emit: (width: number) => void }> = []
+    class StubObserver {
+      constructor(callback: (entries: Array<{ contentRect: { width: number } }>) => void) {
+        observers.push({ emit: (width: number) => callback([{ contentRect: { width } }]) })
+      }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', StubObserver)
+    const emitWidth = async (width: number, list: typeof observers) => {
+      await act(async () => { list.forEach(observer => observer.emit(width)) })
+    }
+    const { container } = mount()
+    await screen.findByRole('button', { name: new RegExp(en.recentlyAdded) })
+    const before = observers.length
+    expect(before).toBeGreaterThan(0)
+    await emitWidth(600, observers)
+    expect(gridOf(container)!.getAttribute('style')).toContain('repeat(2')
+    fireEvent.click(screen.getByRole('button', { name: en.recentHide }))
+    fireEvent.click(screen.getByRole('button', { name: en.recentShow }))
+    // Restoring unmounts and remounts the measured element, so the effect has
+    // to run again. Without recentHidden in its deps no new observer appears
+    // and the block stops following a resize from here on.
+    const fresh = observers.slice(before)
+    expect(fresh.length).toBeGreaterThan(0)
+    await emitWidth(300, fresh)
+    expect(gridOf(container)!.getAttribute('style')).toContain('repeat(1')
+  })
+})

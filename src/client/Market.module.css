@@ -214,6 +214,20 @@
 /* One row; its observer counts 280px cards plus the 10px gap at the actual panel width. */
 .recentRow{display:grid;align-items:start;gap:10px;margin-bottom:16px}
 .recentRow > *{min-width:0}
+/* #940: 最近收录 is a fixed ~quarter of the first screen and could only be
+   dodged by changing the search or the filters. Collapse clips it in place
+   (max-height + visibility, NOT display:none and NOT unmounting): the grid is
+   what the column-counting ResizeObserver measures, and a zero-width box would
+   collapse it to one column. visibility keeps the clipped cards out of the tab
+   order and the accessibility tree while the box keeps its width. */
+.recentCollapsed{max-height:0;overflow:hidden;visibility:hidden;margin-bottom:0}
+.recentHead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:16px 0 8px;padding:0 4px}
+.recentHead .favoritesSectionHead{margin:0;padding:0}
+.recentToggle{display:inline-flex;align-items:center;gap:4px;margin:0;padding:0;border:0;background:none;font:inherit;color:inherit;cursor:pointer}
+.recentToggle:hover{color:var(--dsw-alias-label-secondary,#6b7280)}
+.recentHide.recentHide{height:26px;min-height:26px;padding:0 6px;color:var(--dsw-alias-label-secondary,#6b7280)}
+.recentShow{display:inline-flex;align-items:center;gap:4px;margin:0 0 8px;padding:0 4px;border:0;background:none;font:inherit;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#8b93a1);cursor:pointer}
+.recentShow:hover{color:var(--dsw-alias-label-primary,#1f2328)}
 /* Masonry: two independent columns, each packing its own cards tight.
    A CSS grid cannot do this — its rows are as tall as their tallest cell, so
    a card with screenshots left a matching hole beside a card without them,
