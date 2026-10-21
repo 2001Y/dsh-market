@@ -284,6 +284,11 @@ export interface MarketStatus {
    * behaviour, never a button taken away on a guess.
    */
   restartReachable?: boolean
+  /**
+   * Whether this profile offers a market restart route at all. Absent from an
+   * older host, which reads as "no button": the banner explains instead.
+   */
+  restart?: boolean
 }
 
 /**

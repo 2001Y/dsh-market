@@ -348,6 +348,9 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			empty: "没有匹配的插件",
 			clearFilters: "清除筛选",
 			installedEmpty: "尚未安装社区插件，可前往「发现」页浏览",
+			marketGoneTitle: "插件市场已停止运行",
+			marketGoneBody: "DSH 重新加载插件时把市场一起卸载了。重启 DSH 即可恢复；刚才的操作可能已经完成。",
+			marketGoneRecord: "市场已从 DSH 卸载，这次操作没有结果。重启 DSH 后可在「已安装」里确认。",
 			loadFail: "插件目录加载失败，请稍后重试",
 			loadRetry: "重试",
 			installFail: "安装失败",
@@ -1092,6 +1095,9 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			empty: "No plugins match",
 			clearFilters: "Clear filters",
 			installedEmpty: "No community plugins yet — browse the Discover tab",
+			marketGoneTitle: "The plugin market stopped running",
+			marketGoneBody: "DSH unloaded the market while reloading plugins. Restart DSH to bring it back. The last operation may already have finished.",
+			marketGoneRecord: "The market was unloaded from DSH, so this operation has no result. After restarting, check Installed.",
 			loadFail: "The plugin catalog failed to load. Try again later.",
 			loadRetry: "Retry",
 			installFail: "Install failed",
@@ -8519,6 +8525,16 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			const themeSnap = (0, react.useSyncExternalStore)(props.themeStore.subscribe, props.themeStore.getSnapshot);
 			const [data, setData] = (0, react.useState)(cachedRegistry);
 			const [loadError, setLoadError] = (0, react.useState)(null);
+			/**
+			* The host answered 404 on one of the market's own routes (#962).
+			*
+			* That is not a failed request: it means DSH reloaded its plugins and did
+			* not mount the market again, so nothing on this page can reach the host —
+			* not the catalog, not the operation lock, not the restart route. The page
+			* already on screen keeps rendering (it is a client-side app), which is
+			* exactly why it owes the user this sentence instead of a spinner.
+			*/
+			const [marketGone, setMarketGone] = (0, react.useState)(false);
 			const [installed, setInstalledState] = (0, react.useState)(cachedInstalled ?? {});
 			const setInstalled = (0, react.useCallback)((value) => {
 				cachedInstalled = value;
@@ -9239,10 +9255,50 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				window.addEventListener("keydown", onKey, true);
 				return () => window.removeEventListener("keydown", onKey, true);
 			}, [lightbox, themesFullscreen]);
+			/**
+			* The host is no longer serving the market's routes (#962).
+			*
+			* Only a 404 says this: any other status means the route ran and answered.
+			* When it happens mid-operation, the response that would have settled the
+			* install was lost with the routes, so the spinner has to be released and
+			* the row told what became of it — otherwise it turns until DSH restarts,
+			* with the user left to guess whether the plugin landed.
+			*/
+			const noteMarketGone = (0, react.useCallback)(() => {
+				setMarketGone(true);
+				setBusyUrl(null);
+				setUpdatingName(null);
+				setRemovingName(null);
+				setRecords((list) => list.map((record) => record.state === "running" || record.state === "queued" ? {
+					...record,
+					state: "failed",
+					reason: t("marketGoneRecord")
+				} : record));
+				try {
+					sessionStorage.removeItem("dshm-pending");
+					sessionStorage.removeItem("dshm-updating");
+				} catch {}
+			}, [t]);
+			/**
+			* The status payload, or `null` when the route answered 404 (#962). Every
+			* poll that reads this stops on the null: the market is no longer mounted,
+			* so there is no status to read and nothing left to poll for.
+			*/
+			const readMarketStatus = (0, react.useCallback)(async (res) => {
+				if (res.status === 404) {
+					noteMarketGone();
+					return null;
+				}
+				return await res.json();
+			}, [noteMarketGone]);
 			const loadCatalog = (0, react.useCallback)(() => {
 				setLoadError(null);
 				return fetch(api("/dsh-market/registry"), { cache: "no-store" }).then(async (res) => {
 					const body = await res.json().catch(() => ({}));
+					if (res.status === 404) {
+						noteMarketGone();
+						throw new Error(t("marketGoneTitle"));
+					}
 					if (!res.ok) throw new Error(typeof body.error === "string" ? body.error : `HTTP ${String(res.status)}`);
 					return body;
 				}).then((body) => {
@@ -9260,7 +9316,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				}).catch((error) => {
 					setLoadError(error instanceof Error ? error.message : String(error));
 				});
-			}, []);
+			}, [noteMarketGone, t]);
 			const loadHostCompatibility = (0, react.useCallback)(async (names) => {
 				const unique = [...new Set(names)].filter((name) => {
 					if (name === "" || hostCompatibilitySettled(name) || hostCompatibilityInFlight.has(name)) return false;
@@ -9308,7 +9364,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			}, [setHostVersion]);
 			(0, react.useEffect)(() => {
 				loadCatalog();
-				fetch(api("/dsh-market/status"), { cache: "no-store" }).then((res) => res.json()).then((status) => {
+				fetch(api("/dsh-market/status"), { cache: "no-store" }).then(readMarketStatus).then((status) => {
+					if (status === null) return;
 					statusRef.current = {
 						busy: status.busy === true,
 						runningAgents: Array.isArray(status.runningAgents) ? status.runningAgents.map(String) : []
@@ -9329,7 +9386,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					if (typeof status.version === "string" && status.version !== "") setVersion(status.version);
 				}).catch(() => {});
 				refreshInstalled();
-			}, [refreshInstalled, loadCatalog]);
+			}, [
+				refreshInstalled,
+				loadCatalog,
+				readMarketStatus
+			]);
 			(0, react.useEffect)(() => {
 				if (bootId === null) return;
 				const saved = readSession("dshm-restart");
@@ -9433,7 +9494,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					return;
 				}
 				const timer = setInterval(() => {
-					fetch(api("/dsh-market/status"), { cache: "no-store" }).then((res) => res.json()).then((status) => {
+					fetch(api("/dsh-market/status"), { cache: "no-store" }).then(readMarketStatus).then((status) => {
+						if (status === null) return;
 						statusRef.current = {
 							busy: status.busy === true,
 							runningAgents: Array.isArray(status.runningAgents) ? status.runningAgents.map(String) : []
@@ -10887,8 +10949,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					if (drainingRef.current) return;
 					if (operationInFlight()) return;
 					if (!recordsRef.current.some((record) => record.state === "queued")) return;
-					fetch(api("/dsh-market/status"), { cache: "no-store" }).then((res) => res.json()).then((status) => {
-						if (disposed) return;
+					fetch(api("/dsh-market/status"), { cache: "no-store" }).then(readMarketStatus).then((status) => {
+						if (disposed || status === null) return;
 						const runningAgents = Array.isArray(status.runningAgents) ? status.runningAgents.map(String) : [];
 						const busy = status.busy === true;
 						statusRef.current = {
@@ -10916,7 +10978,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 					disposed = true;
 					clearInterval(timer);
 				};
-			}, []);
+			}, [readMarketStatus]);
 			/** A queued record's "run now": retry immediately instead of waiting for idle. */
 			const runQueuedNow = (0, react.useCallback)((record, confirmAgentsRunning = false) => {
 				if (!recordsRef.current.some((item) => item.id === record.id && item.state === "queued")) return;
@@ -12733,7 +12795,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 											children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)(IconQuestionOutline14, { size: 14 })
 										})
 									}),
-									restartEnabled && restartReachable && debuggerLatch === null && recovery === null && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
+									restartEnabled && restartReachable && debuggerLatch === null && recovery === null && !marketGone && /* @__PURE__ */ (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
 										variant: "primary",
 										size: "sm",
 										disabled: restarting || hostBusy || busyUrl !== null || updatingName !== null || removingName !== null,
@@ -12937,7 +12999,14 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							setGroupMenuFor(null);
 							setAssignFor(null);
 						},
-						children: tab === "backup" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+						children: marketGone ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
+							className: Market_module_css_default.empty,
+							role: "alert",
+							children: [/* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", { children: /* @__PURE__ */ (0, react_jsx_runtime.jsx)("b", { children: t("marketGoneTitle") }) }), /* @__PURE__ */ (0, react_jsx_runtime.jsx)("div", {
+								className: Market_module_css_default.spec,
+								children: t("marketGoneBody")
+							})]
+						}) : tab === "backup" ? /* @__PURE__ */ (0, react_jsx_runtime.jsxs)("div", {
 							className: Market_module_css_default.backupGrid,
 							children: [
 								/* @__PURE__ */ (0, react_jsx_runtime.jsxs)("section", {

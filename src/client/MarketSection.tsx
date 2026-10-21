@@ -1917,6 +1917,16 @@ export function MarketSection(props: MarketSectionProps) {
   )
   const [data, setData] = useState<Registry | null>(cachedRegistry)
   const [loadError, setLoadError] = useState<string | null>(null)
+  /**
+   * The host answered 404 on one of the market's own routes (#962).
+   *
+   * That is not a failed request: it means DSH reloaded its plugins and did
+   * not mount the market again, so nothing on this page can reach the host —
+   * not the catalog, not the operation lock, not the restart route. The page
+   * already on screen keeps rendering (it is a client-side app), which is
+   * exactly why it owes the user this sentence instead of a spinner.
+   */
+  const [marketGone, setMarketGone] = useState(false)
   const [installed, setInstalledState] = useState<InstalledMap>(cachedInstalled ?? {})
   const setInstalled = useCallback((value: InstalledMap) => { cachedInstalled = value; setInstalledState(value) }, [])
   const [repoIdentities, setRepoIdentitiesState] = useState<InstalledRepoIdentities>(cachedRepoIdentities ?? {})
@@ -2687,6 +2697,43 @@ export function MarketSection(props: MarketSectionProps) {
     return () => window.removeEventListener('keydown', onKey, true)
   }, [lightbox, themesFullscreen])
 
+  /**
+   * The host is no longer serving the market's routes (#962).
+   *
+   * Only a 404 says this: any other status means the route ran and answered.
+   * When it happens mid-operation, the response that would have settled the
+   * install was lost with the routes, so the spinner has to be released and
+   * the row told what became of it — otherwise it turns until DSH restarts,
+   * with the user left to guess whether the plugin landed.
+   */
+  const noteMarketGone = useCallback(() => {
+    setMarketGone(true)
+    setBusyUrl(null)
+    setUpdatingName(null)
+    setRemovingName(null)
+    setRecords(list => list.map(record =>
+      record.state === 'running' || record.state === 'queued'
+        ? { ...record, state: 'failed' as const, reason: t('marketGoneRecord') }
+        : record))
+    try {
+      sessionStorage.removeItem('dshm-pending')
+      sessionStorage.removeItem('dshm-updating')
+    } catch { /* storage unavailable */ }
+  }, [t])
+
+  /**
+   * The status payload, or `null` when the route answered 404 (#962). Every
+   * poll that reads this stops on the null: the market is no longer mounted,
+   * so there is no status to read and nothing left to poll for.
+   */
+  const readMarketStatus = useCallback(async (res: Response): Promise<MarketStatus | null> => {
+    if (res.status === 404) {
+      noteMarketGone()
+      return null
+    }
+    return await res.json() as MarketStatus
+  }, [noteMarketGone])
+
   const loadCatalog = useCallback(() => {
     setLoadError(null)
     return fetch(api('/dsh-market/registry'), { cache: 'no-store' })
@@ -2695,6 +2742,10 @@ export function MarketSection(props: MarketSectionProps) {
           registry?: Registry
           hostVersion?: string | null
           error?: string
+        }
+        if (res.status === 404) {
+          noteMarketGone()
+          throw new Error(t('marketGoneTitle'))
         }
         if (!res.ok) throw new Error(typeof body.error === 'string' ? body.error : `HTTP ${String(res.status)}`)
         return body
@@ -2717,7 +2768,7 @@ export function MarketSection(props: MarketSectionProps) {
       // smaller today" looked identical on screen — and the second reading
       // is the one users reached.
       .catch((error: unknown) => { setLoadError(error instanceof Error ? error.message : String(error)) })
-  }, [])
+  }, [noteMarketGone, t])
 
   const loadHostCompatibility = useCallback(async (names: readonly string[]): Promise<void> => {
     const unique = [...new Set(names)].filter(name => {
@@ -2771,8 +2822,9 @@ export function MarketSection(props: MarketSectionProps) {
   useEffect(() => {
     void loadCatalog()
     fetch(api('/dsh-market/status'), { cache: 'no-store' })
-      .then(res => res.json())
+      .then(readMarketStatus)
       .then(status => {
+        if (status === null) return
         statusRef.current = {
           busy: status.busy === true,
           runningAgents: Array.isArray(status.runningAgents) ? status.runningAgents.map(String) : [],
@@ -2803,7 +2855,7 @@ export function MarketSection(props: MarketSectionProps) {
       })
       .catch(() => {})
     refreshInstalled()
-  }, [refreshInstalled, loadCatalog])
+  }, [refreshInstalled, loadCatalog, readMarketStatus])
 
   // Pending-restart flags survive tab switches and page reloads, scoped to
   // one host process: a different boot id means the restart happened and the
@@ -2926,8 +2978,12 @@ export function MarketSection(props: MarketSectionProps) {
     }
     const timer = setInterval(() => {
       fetch(api('/dsh-market/status'), { cache: 'no-store' })
-        .then(res => res.json())
+        .then(readMarketStatus)
         .then(status => {
+          // 404: the host unloaded the market, and this poll is the only
+          // witness left of the operation it was tracking — noteMarketGone
+          // released the button and settled the row (#962).
+          if (status === null) return
           statusRef.current = {
             busy: status.busy === true,
             runningAgents: Array.isArray(status.runningAgents) ? status.runningAgents.map(String) : [],
@@ -4439,9 +4495,9 @@ export function MarketSection(props: MarketSectionProps) {
       // (#838). Ask first — with no record there is nothing to drain.
       if (!recordsRef.current.some(record => record.state === 'queued')) return
       void fetch(api('/dsh-market/status'), { cache: 'no-store' })
-        .then(res => res.json())
+        .then(readMarketStatus)
         .then(status => {
-          if (disposed) return
+          if (disposed || status === null) return
           const runningAgents: string[] = Array.isArray(status.runningAgents) ? status.runningAgents.map(String) : []
           const busy = status.busy === true
           statusRef.current = { busy, runningAgents }
@@ -4470,7 +4526,7 @@ export function MarketSection(props: MarketSectionProps) {
       disposed = true
       clearInterval(timer)
     }
-  }, [])
+  }, [readMarketStatus])
 
   /** A queued record's "run now": retry immediately instead of waiting for idle. */
   const runQueuedNow = useCallback((record: OperationRecord, confirmAgentsRunning = false) => {
@@ -6142,7 +6198,7 @@ export function MarketSection(props: MarketSectionProps) {
             >
               <span className={css.bannerHint}><IconQuestionOutline14 size={14} /></span>
             </Tooltip>
-            {restartEnabled && restartReachable && debuggerLatch === null && recovery === null && (
+            {restartEnabled && restartReachable && debuggerLatch === null && recovery === null && !marketGone && (
               <Button
                 variant="primary"
                 size="sm"
@@ -6342,7 +6398,18 @@ export function MarketSection(props: MarketSectionProps) {
           setAssignFor(null)
         }}
       >
-        {tab === 'backup'
+        {/* Everything below reaches the host through the market's own routes;
+            with those gone (#962) every control here would fail on click, so
+            the body says the one thing that is both true and actionable
+            instead of leaving a page of dead buttons. */}
+        {marketGone
+          ? (
+              <div className={css.empty} role="alert">
+                <div><b>{t('marketGoneTitle')}</b></div>
+                <div className={css.spec}>{t('marketGoneBody')}</div>
+              </div>
+            )
+          : tab === 'backup'
           ? (
               <div className={css.backupGrid}>
                 <section className={css.backupCard}>
