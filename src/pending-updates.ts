@@ -22,10 +22,10 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { logEvent } from './log.ts'
-import { readInstalledVersion } from './profile.ts'
+import { readInstalledVersion, readManifestDeps, readProfileBundles } from './profile.ts'
 
 /** One removal that has not been answered by a settled install. */
 export interface PendingUpdate {
@@ -234,6 +234,52 @@ function managerSucceeded(result: { application: string }): boolean {
 }
 
 /**
+ * Whether this profile still wants the package: declared in its manifest, or
+ * listed as a bundle. `readInstalledVersion` only looks at node_modules, and
+ * the half-removed state #928 describes is exactly "still on disk, no longer
+ * declared" — treating that as settled cleared the record while the plugin
+ * was not composed at all (#949 review).
+ */
+function profileStillWants(profile: string, profileDirectory: string, name: string): boolean {
+  if (Object.hasOwn(readManifestDeps(profile, profileDirectory), name)) return true
+  return readProfileBundles(profileDirectory).includes(name)
+}
+
+/**
+ * Drop a profile write lock whose owner is gone.
+ *
+ * A host killed mid-update leaves `<profile>/package.json.lock` naming a PID
+ * that no longer exists; the repair's reinstall then waits out the full lock
+ * timeout and fails, every start (#914's premise, applied to this path). A
+ * live PID — including this very process — is never touched.
+ */
+export function clearStaleProfileLock(profileDirectory: string): boolean {
+  const file = join(profileDirectory, 'package.json.lock')
+  let raw: string
+  try {
+    raw = readFileSync(file, 'utf8')
+  } catch {
+    return false
+  }
+  const pid = Number(raw.trim())
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (error) {
+    // EPERM means the process exists and belongs to someone else.
+    if ((error as NodeJS.ErrnoException).code === 'EPERM') return false
+  }
+  try {
+    unlinkSync(file)
+    logEvent('warn', 'update-repair', `cleared a stale profile write lock left by pid ${String(pid)}`)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
  * Finish or forget every update an earlier run left half-applied.
  *
  * Called once the composition has settled. A record is resolved by looking at
@@ -251,12 +297,16 @@ export async function repairInterruptedUpdates(options: RepairOptions): Promise<
   const pending = journal.list().filter(entry => entry.profile === options.profile)
   for (const entry of pending) {
     const installed = readInstalledVersion(options.profile, entry.name, options.profileDirectory)
-    if (installed !== null && (entry.to === '' || installed === entry.to || installed === entry.from)) {
+    const wanted = profileStillWants(options.profile, options.profileDirectory, entry.name)
+    // Settled means BOTH halves agree: the build is on disk AND the profile
+    // still declares it. "On disk but no longer declared" is the interrupted
+    // removal itself, so it falls through to the reinstall.
+    if (installed !== null && wanted && (entry.to === '' || installed === entry.to || installed === entry.from)) {
       journal.finish(entry.id)
       report.finished.push(entry.name)
       continue
     }
-    if (installed !== null) {
+    if (installed !== null && wanted) {
       journal.bump(entry.id)
       report.failed.push({
         name: entry.name,
@@ -266,6 +316,10 @@ export async function repairInterruptedUpdates(options: RepairOptions): Promise<
     }
     const spec = entry.to === '' ? entry.spec : `${entry.name}@${entry.to}`
     try {
+      // The interrupted update may have died holding the profile lock; its
+      // owner is gone by now, and without this the install below waits out
+      // the whole timeout on every start.
+      clearStaleProfileLock(options.profileDirectory)
       const result = await withDeadline(
         options.manager.installBundle(spec, { requestId: randomUUID() }),
         options.timeoutMs ?? REPAIR_INSTALL_TIMEOUT_MS,

@@ -95,6 +95,10 @@ const FORWARDED_FAILURE_CODES = new Set([
   'stop-profile',
   'management-required',
   'incompatible-version',
+  // The desktop manager stopped answering mid-update and the market will
+  // finish or forget it on the next start (#928, #949): an external caller
+  // must be able to tell this from an ordinary failure.
+  'update-incomplete',
 ])
 
 function failureCode(status: number, body: Record<string, unknown>): string {

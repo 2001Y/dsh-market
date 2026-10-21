@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DeadlineExceeded,
   PendingUpdateJournal,
+  clearStaleProfileLock,
   pendingUpdatesFile,
   repairInterruptedUpdates,
   withDeadline,
@@ -27,6 +28,11 @@ function profile(): string {
   roots.push(dir)
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: {} }))
   return dir
+}
+
+/** Declare a package in the profile manifest, the way the manager would. */
+function declare(dir: string, name: string, range = '^1.0.0'): void {
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { [name]: range } }))
 }
 
 /** Put a package in the profile's node_modules, the way pnpm would have. */
@@ -108,9 +114,10 @@ describe('repairing an update a previous start interrupted', () => {
     expect(journal.list()).toEqual([])
   })
 
-  it('clears the record when the previous build is still installed', async () => {
+  it('clears the record when the previous build is still installed and declared', async () => {
     const dir = profile()
     install(dir, 'example', '1.0.0')
+    declare(dir, 'example')
     const journal = new PendingUpdateJournal(pendingUpdatesFile(dir))
     journal.begin({ profile: 'desktop', name: 'example', from: '1.0.0', to: '2.0.0', spec: 'example@2.0.0' })
 
@@ -127,6 +134,7 @@ describe('repairing an update a previous start interrupted', () => {
   it('clears the record when the requested build did land before the answer was lost', async () => {
     const dir = profile()
     install(dir, 'example', '2.0.0')
+    declare(dir, 'example')
     const journal = new PendingUpdateJournal(pendingUpdatesFile(dir))
     journal.begin({ profile: 'desktop', name: 'example', from: '1.0.0', to: '2.0.0', spec: 'example@2.0.0' })
 
@@ -171,9 +179,49 @@ describe('repairing an update a previous start interrupted', () => {
     expect(journal.list()).toMatchObject([{ name: 'example', attempts: 1 }])
   })
 
+  it('reinstalls when the build is on disk but the profile no longer declares it (#928 half-removal)', async () => {
+    // The interrupted removal wrote the manifest and never ran the install:
+    // node_modules still holds the OLD build, and the profile declares
+    // nothing. Treating "a version is installed" as settled cleared the
+    // record while the plugin was not composed at all.
+    const dir = profile()
+    install(dir, 'example', '1.0.0')
+    const journal = new PendingUpdateJournal(pendingUpdatesFile(dir))
+    journal.begin({ profile: 'desktop', name: 'example', from: '1.0.0', to: '2.0.0', spec: 'example@2.0.0' })
+
+    const service = manager(async (spec) => {
+      expect(spec).toBe('example@2.0.0')
+      install(dir, 'example', '2.0.0')
+      declare(dir, 'example')
+      return { application: 'applied' }
+    })
+    const report = await repairInterruptedUpdates({ profile: 'desktop', profileDirectory: dir, manager: service })
+
+    expect(service.installBundle).toHaveBeenCalledTimes(1)
+    expect(report.reinstalled).toEqual(['example'])
+    expect(journal.list()).toEqual([])
+  })
+
+  it('clears a profile write lock whose owner is gone, and keeps a live one', () => {
+    const dir = profile()
+    const lock = join(dir, 'package.json.lock')
+    writeFileSync(lock, String(process.pid))
+    expect(clearStaleProfileLock(dir)).toBe(false)
+    expect(readFileSync(lock, 'utf8')).toBe(String(process.pid))
+
+    // A PID that cannot exist stands in for a host killed mid-update.
+    writeFileSync(lock, '4294967294')
+    expect(clearStaleProfileLock(dir)).toBe(true)
+    expect(() => readFileSync(lock, 'utf8')).toThrow()
+  })
+
   it('does not fight a version the user chose while the update was interrupted', async () => {
     const dir = profile()
     install(dir, 'example', '1.5.0')
+    // A version the user chose is one the profile declares — that is what a
+    // real install writes. Undeclared-but-on-disk is the interrupted removal,
+    // covered by the half-removal test above.
+    declare(dir, 'example', '^1.5.0')
     const journal = new PendingUpdateJournal(pendingUpdatesFile(dir))
     journal.begin({ profile: 'desktop', name: 'example', from: '1.0.0', to: '2.0.0', spec: 'example@2.0.0' })
 
