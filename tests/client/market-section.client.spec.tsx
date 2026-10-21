@@ -8602,3 +8602,64 @@ describe('最近收录 collapses and hides without losing its column measurement
     expect(gridOf(container)!.getAttribute('style')).toContain('repeat(1')
   })
 })
+
+describe('when DSH has unloaded the market (#962)', () => {
+  it('says the market stopped and that a restart brings it back, instead of loading forever', async () => {
+    // The host reloaded its plugins and did not mount the market again: every
+    // market route answers 404 while the page's own client keeps running.
+    stubFetch({
+      '/dsh-market/registry': { __status: 404 },
+      '/dsh-market/status': { __status: 404 },
+    })
+    render(<MarketSection {...props()} />)
+
+    expect(await screen.findByText(en.marketGoneTitle)).toBeTruthy()
+    expect(screen.getByText(en.marketGoneBody)).toBeTruthy()
+    // Neither the spinner nor the retry: nothing on this page can fix it, and
+    // a Retry button that 404s every time is a loop with no way out.
+    expect(screen.queryByText(en.loading)).toBeNull()
+    expect(screen.queryByRole('button', { name: en.loadRetry })).toBeNull()
+  })
+
+  it('settles an install whose answer was lost with the routes, and leaves nothing pending', async () => {
+    vi.useFakeTimers()
+    try {
+      let installStarted = false
+      vi.stubGlobal('fetch', vi.fn((url: string) => {
+        const path = String(url).split('?')[0]
+        if (path === '/dsh-market/install') {
+          installStarted = true
+          // The host unloaded the market mid-install: the response never comes.
+          return new Promise<Response>(() => {})
+        }
+        if (path === '/dsh-market/status' && installStarted) {
+          return Promise.resolve(new Response('', { status: 404 }))
+        }
+        const payload =
+          path === '/dsh-market/registry' ? { source: 'live', registry: REGISTRY, hostVersion: '0.1.2-alpha.2' }
+          : path === '/dsh-market/installed' ? { profile: 'web', installed: {}, live: [], disabled: [], groups: {}, groupOrder: [], favorites: [], blocked: [] }
+          : path === '/dsh-market/status' ? { active: false, pnpm: true, boot: 'boot-1', restart: true, installed: {} }
+          : path === '/dsh-market/updates' ? { updates: {} }
+          : path === '/dsh-market/discovery-compatibility' ? { hostVersion: '0.1.2-alpha.2', plugins: {} }
+          : null
+        if (payload === null) return Promise.reject(new Error(`unstubbed fetch: ${String(url)}`))
+        return Promise.resolve(new Response(JSON.stringify(payload), { status: 200 }))
+      }))
+
+      render(<MarketSection {...props()} />)
+      await vi.waitFor(() => { screen.getByText('dsh-loop') })
+      fireEvent.click(screen.getAllByRole('button', { name: en.install })[0]!)
+      await vi.waitFor(() => { screen.getByRole('button', { name: en.confirmInstall }) })
+      fireEvent.click(screen.getByRole('button', { name: en.confirmInstall }))
+      await vi.waitFor(() => { expect(installStarted, 'the install never started').toBe(true) })
+      await vi.advanceTimersByTimeAsync(2100)
+
+      await vi.waitFor(() => { screen.getAllByText(en.marketGoneTitle) })
+      // The "install in progress" marker must not survive: a remount would
+      // otherwise restore the row and spin on a host that is not there.
+      expect(sessionStorage.getItem('dshm-pending')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

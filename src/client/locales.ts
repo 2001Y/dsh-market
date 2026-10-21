@@ -151,6 +151,11 @@ export const zh = {
   empty: '没有匹配的插件',
   clearFilters: '清除筛选',
   installedEmpty: '尚未安装社区插件，可前往「发现」页浏览',
+  // The host answered 404 on the market's own routes (#962): the plugin is
+  // no longer mounted, and nothing here can work until DSH restarts.
+  marketGoneTitle: '插件市场已停止运行',
+  marketGoneBody: 'DSH 重新加载插件时把市场一起卸载了。重启 DSH 即可恢复；刚才的操作可能已经完成。',
+  marketGoneRecord: '市场已从 DSH 卸载，这次操作没有结果。重启 DSH 后可在「已安装」里确认。',
   loadFail: '插件目录加载失败，请稍后重试',
   loadRetry: '重试',
   installFail: '安装失败',
@@ -919,6 +924,11 @@ export const en: Record<MarketKey, string> = {
   empty: 'No plugins match',
   clearFilters: 'Clear filters',
   installedEmpty: 'No community plugins yet — browse the Discover tab',
+  // The host answered 404 on the market's own routes (#962): the plugin is
+  // no longer mounted, and nothing here can work until DSH restarts.
+  marketGoneTitle: 'The plugin market stopped running',
+  marketGoneBody: 'DSH unloaded the market while reloading plugins. Restart DSH to bring it back. The last operation may already have finished.',
+  marketGoneRecord: 'The market was unloaded from DSH, so this operation has no result. After restarting, check Installed.',
   loadFail: 'The plugin catalog failed to load. Try again later.',
   loadRetry: 'Retry',
   installFail: 'Install failed',
