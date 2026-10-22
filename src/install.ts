@@ -13,7 +13,7 @@ import { classifyPnpmFailure, HOST_NAMESPACE_RE, isTransientPnpmFailure } from '
 import { conflictingEntryIds, dropFromManifest, hasDshManifest, hasLoadableEntry, mergeDuplicateReleaseAgeExcludes, pluginSubdirs, profileDir, readInstalled, readManifestDeps, readProfileBundles, dropUnparseableBuildKeys } from './profile.ts'
 import { logEvent } from './log.ts'
 import { registryNameOf } from './official-desktop.ts'
-import { cleanOrphanedStore } from './store.ts'
+import { cleanOrphanedIgnored, cleanOrphanedStore } from './store.ts'
 
 /**
  * One-shot bypass for pnpm's fresh-release hold; scoped to a single command.
@@ -405,6 +405,16 @@ export async function withHoistRecovery(
       logEvent('warn', 'install', `could not merge minimumReleaseAgeExclude after success (#883, #878): ${String(error)}`)
     }
   }
+  // After every mutation — success, failure, and cancel. Garbage lands in
+  // `.ignored` on the NEXT pnpm run, so a success-only hook would miss the
+  // run that just moved it there (#974). Must not fail the user's command.
+  try {
+    const removed = cleanOrphanedIgnored(profileDir(profile, profileDirectory))
+    if (removed.length > 0) {
+      logEvent('info', 'install',
+        `removed ${removed.length} quarantined dir(s) from node_modules/.ignored: ${removed.slice(0, 3).join(', ')}${removed.length > 3 ? ', …' : ''}`)
+    }
+  } catch { /* cleanup must never fail the install */ }
   return result
 }
 
