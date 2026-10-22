@@ -1033,6 +1033,22 @@ describe('store hygiene (#119)', () => {
       rmSync(home, { recursive: true, force: true })
     }
   })
+
+  it('reclaims node_modules/.ignored after success and after cancel (#974)', async () => {
+    // Garbage lands in .ignored on the NEXT pnpm run. Cleaning only on
+    // failure would miss the successful run that just moved it there.
+    const ignored = join(profileDir('web'), 'node_modules', '.ignored')
+    const run = async (): Promise<InstallResult> => ok
+    mkdirSync(join(ignored, 'orphan_tmp_1_a'), { recursive: true })
+    await withHoistRecovery(run, 'web', ['add', 'dsh-loop'])
+    expect(existsSync(join(ignored, 'orphan_tmp_1_a'))).toBe(false)
+
+    mkdirSync(join(ignored, 'orphan_tmp_1_a'), { recursive: true })
+    const cancel = async (): Promise<InstallResult> =>
+      ({ exitCode: 1, timedOut: false, stdout: '', stderr: '', cancelled: true })
+    await withHoistRecovery(cancel, 'web', ['add', 'dsh-loop'])
+    expect(existsSync(join(ignored, 'orphan_tmp_1_a'))).toBe(false)
+  })
 })
 
 describe('parseIgnoredBuilds (#6)', () => {
