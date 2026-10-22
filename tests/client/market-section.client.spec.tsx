@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarketSection, OwnerAvatar, resetHostCompatibilityCache, resetMarketPortalHost, resetThemePreviewCache } from '../../src/client/MarketSection.tsx'
 import css from '../../src/client/Market.module.css'
 import { downloadStatsText } from '../../src/client/download-stats.ts'
+import { createHostNavigation } from '../../src/client/host-navigation.ts'
 import { SEARCH_DELAY_MS } from '../../src/client/SearchInput.tsx'
 import {
   pluginScreenshotCandidates, resetGithubRouting, resetScreenshotsCache, restartHintKey, setGithubRoutes,
@@ -3419,6 +3420,60 @@ describe('#60 enable/disable switches in the Installed tab', () => {
  * then uninstall and the page is level again, with nothing left for a
  * refresh to show, yet it kept asking. It was reporting session history,
  * not pending work. */
+describe("the host's own page for a plugin (dsh 0.2.1+)", () => {
+  /** One installed plugin, live, with the host offering its navigation service. */
+  function renderInstalled(navigation?: { openBundle: (name: string) => void }) {
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web',
+        installed: { 'dsh-loop': '^1.0.0' },
+        live: ['dsh-loop'],
+        disabled: [],
+        groups: {},
+        groupOrder: [],
+      },
+    })
+    const store = createHostNavigation()
+    if (navigation !== undefined) store.attach(navigation)
+    const element = render(<MarketSection {...props()} hostNavigation={store} />)
+    return { ...element, store }
+  }
+
+  it('opens the bundle on the host when the service is there', async () => {
+    const opened: string[] = []
+    renderInstalled({ openBundle: name => opened.push(name) })
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    await openRowMenu('dsh-loop')
+    fireEvent.click(await screen.findByRole('menuitem', { name: en.openInHostPage }))
+    expect(opened).toEqual(['dsh-loop'])
+  })
+
+  it('offers nothing on a host that never provides the service', async () => {
+    // Every dsh before 0.2.1, and any host whose plugin manager is not
+    // mounted. An entry that cannot do anything is worse than no entry.
+    renderInstalled()
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    await openRowMenu('dsh-loop')
+    expect(screen.queryByRole('menuitem', { name: en.openInHostPage })).toBeNull()
+  })
+
+  it('offers it to a menu already on screen when the service arrives late', async () => {
+    // The manager's client half can load after this panel; a menu drawn from a
+    // setup-time snapshot would never show the action on a host that has it.
+    const opened: string[] = []
+    const { store } = renderInstalled()
+    await screen.findByText('dsh-loop')
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    await openRowMenu('dsh-loop')
+    expect(screen.queryByRole('menuitem', { name: en.openInHostPage })).toBeNull()
+    store.attach({ openBundle: name => opened.push(name) })
+    fireEvent.click(await screen.findByRole('menuitem', { name: en.openInHostPage }))
+    expect(opened).toEqual(['dsh-loop'])
+  })
+})
+
 describe('refresh banner falls back when the change is undone (#340)', () => {
   it('stops asking after the installed plugin is uninstalled again', async () => {
     let present: Record<string, string> = {}

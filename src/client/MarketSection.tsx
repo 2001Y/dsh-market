@@ -50,6 +50,7 @@ import { clearSettled, drop, enqueue, patch as patchRecord, recordForUrl, restor
 import type { OperationRecord } from './operations.ts'
 import { Diagnostics } from './Diagnostics.tsx'
 import { exportMarketLog } from './self-check.ts'
+import type { HostNavigationStore } from './host-navigation.ts'
 import type { SidebarEntry } from './sidebar-entry.ts'
 import {
   installCommandFor,
@@ -1812,6 +1813,11 @@ export interface MarketSectionProps {
   /** The opt-in sidebar row. Absent, the page offers no shortcut tip. */
   sidebar?: SidebarEntry
   /**
+   * The host's `pluginNavigation` (dsh 0.2.1+). Absent, installed plugins
+   * offer no link to the host's own page for them.
+   */
+  hostNavigation?: HostNavigationStore
+  /**
    * Which mount this is. Only the settings page may offer the sidebar
    * shortcut; the sidebar page must not ask to open itself, and the Plugins
    * page's tab is already one click from 已安装.
@@ -1893,6 +1899,14 @@ export function MarketSection(props: MarketSectionProps) {
   const lang = String(localeSnap.active).toLowerCase().startsWith('zh') ? 'zh' : 'en'
   const surface = props.surface ?? 'settings'
   const sidebar = props.sidebar
+  // The host's own page for a bundle (dsh 0.2.1+). Subscribed rather than read
+  // once: the service arrives with the host's plugin manager, which may load
+  // after this panel is already on screen.
+  const hostNavigation = props.hostNavigation
+  const openInHost = useSyncExternalStore(
+    cb => hostNavigation?.subscribe(cb) ?? (() => {}),
+    () => hostNavigation?.get(),
+  )
   const [sidebarSnap, setSidebarSnap] = useState(() => ({
     supported: sidebar?.supported() === true,
     enabled: sidebar?.enabled() === true,
@@ -5334,6 +5348,11 @@ export function MarketSection(props: MarketSectionProps) {
   }
 
   const renderInstalledBlockMenu = (name: string) => {
+    // The host's page for this bundle, when it offers one. It is the only
+    // place a bundle's ROWS can be switched one by one, which is the reason
+    // to leave a page that already installs, updates and removes.
+    const hostPage = openInHost === undefined ? null : () => { openInHost.openBundle(name) }
+
     const entry = data === null ? undefined : catalogEntryForInstalled(data.plugins, name, String(installed[name] ?? ''), repoIdentities[name], repoHints[name])
     const aliases = entry === undefined ? [name] : blockAliases(entry, name)
     const hidden = aliases.some(alias => blockedNameSet.has(alias))
@@ -5369,6 +5388,7 @@ export function MarketSection(props: MarketSectionProps) {
           if (id === 'block') toggleBlock(blockToggleName(aliases))
           if (id === 'update-exempt') toggleUpdateExempt(name)
           if (id === 'ignore-boot') ignoreUpdateNotices([name])
+          if (id === 'host-page') hostPage?.()
           if (id === 'uninstall' && !uninstallBusy) setRemoveConfirm(name)
         }}
         align="end"
@@ -5390,6 +5410,7 @@ export function MarketSection(props: MarketSectionProps) {
           ...(favoriteUrl === undefined ? [] : [{ id: 'favorite', label: favorited ? t('favoriteRemove') : t('favoriteAdd') }]),
           { id: 'block', label: hidden ? t('blockRemove') : t('blockAdd') },
           ...(showBootIgnore ? [{ id: 'ignore-boot', label: t('ignoreUpdateNotice') }] : []),
+          ...(hostPage === null ? [] : [{ id: 'host-page', label: t('openInHostPage') }]),
           ...(showExempt ? [{ id: 'update-exempt', label: exempt ? t('updateExemptRemove') : t('updateExemptAdd') }] : []),
           { type: 'separator' as const, id: 'uninstall-sep' },
           { id: 'uninstall', label: removing ? t('uninstalling') : t('uninstall'), danger: true, disabled: uninstallBusy },

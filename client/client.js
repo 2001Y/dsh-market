@@ -582,6 +582,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			installedDependencyNote: "另有 {0} 个包是插件带进来的依赖，不是插件，未列在上方。",
 			heldReleaseAction: "仍安装 {0}",
 			ignoreUpdateNotice: "重启前不再提醒",
+			openInHostPage: "在插件页查看",
 			ignoreAllUpdateNotices: "重启前都不再提醒",
 			updateNoticeIgnored: "重启前不再提醒",
 			updateExemptAdd: "一直不提醒更新",
@@ -1329,6 +1330,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			installedDependencyNote: "{0} more packages came in as dependencies of plugins — they are not plugins, so they are not listed above.",
 			heldReleaseAction: "Install {0} anyway",
 			ignoreUpdateNotice: "Don't remind until restart",
+			openInHostPage: "View in Plugins",
 			ignoreAllUpdateNotices: "Don't remind any until restart",
 			updateNoticeIgnored: "No reminders until restart",
 			updateExemptAdd: "Never remind about updates",
@@ -8632,6 +8634,8 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			const lang = String(localeSnap.active).toLowerCase().startsWith("zh") ? "zh" : "en";
 			const surface = props.surface ?? "settings";
 			const sidebar = props.sidebar;
+			const hostNavigation = props.hostNavigation;
+			const openInHost = (0, react.useSyncExternalStore)((cb) => hostNavigation?.subscribe(cb) ?? (() => {}), () => hostNavigation?.get());
 			const [sidebarSnap, setSidebarSnap] = (0, react.useState)(() => ({
 				supported: sidebar?.supported() === true,
 				enabled: sidebar?.enabled() === true,
@@ -11854,6 +11858,9 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				});
 			};
 			const renderInstalledBlockMenu = (name) => {
+				const hostPage = openInHost === void 0 ? null : () => {
+					openInHost.openBundle(name);
+				};
 				const entry = data === null ? void 0 : catalogEntryForInstalled(data.plugins, name, String(installed[name] ?? ""), repoIdentities[name], repoHints[name]);
 				const aliases = entry === void 0 ? [name] : blockAliases(entry, name);
 				const hidden = aliases.some((alias) => blockedNameSet.has(alias));
@@ -11879,6 +11886,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 						if (id === "block") toggleBlock(blockToggleName(aliases));
 						if (id === "update-exempt") toggleUpdateExempt(name);
 						if (id === "ignore-boot") ignoreUpdateNotices([name]);
+						if (id === "host-page") hostPage?.();
 						if (id === "uninstall" && !uninstallBusy) setRemoveConfirm(name);
 					},
 					align: "end",
@@ -11908,6 +11916,10 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 							id: "ignore-boot",
 							label: t("ignoreUpdateNotice")
 						}] : [],
+						...hostPage === null ? [] : [{
+							id: "host-page",
+							label: t("openInHostPage")
+						}],
 						...showExempt ? [{
 							id: "update-exempt",
 							label: exempt ? t("updateExemptRemove") : t("updateExemptAdd")
@@ -15410,6 +15422,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				themeStore: props.themeStore,
 				preferredSubsectionId: props.preferredSubsectionId,
 				sidebar: props.sidebar,
+				hostNavigation: props.hostNavigation,
 				surface: props.surface
 			}));
 		}
@@ -16156,6 +16169,25 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			}, "dsh-market: settings nav icon");
 		}
 		//#endregion
+		//#region src/client/host-navigation.ts
+		function createHostNavigation() {
+			let navigation;
+			const listeners = /* @__PURE__ */ new Set();
+			return {
+				get: () => navigation,
+				subscribe: (listener) => {
+					listeners.add(listener);
+					return () => {
+						listeners.delete(listener);
+					};
+				},
+				attach: (next) => {
+					navigation = next;
+					for (const listener of [...listeners]) listener();
+				}
+			};
+		}
+		//#endregion
 		//#region src/client/sidebar-entry.ts
 		/**
 		* The market's own row in the sidebar (#846), beside the host's Plugins page.
@@ -16333,6 +16365,12 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			installSettingsNavIcon(ctx, () => t("nav"));
 			let sidebar;
 			/**
+			* The host's `pluginNavigation` (dsh 0.2.1+), published as a store so the
+			* panel's menus can offer "在插件页查看" whether the service is there before
+			* or after this package mounts. See host-navigation.ts.
+			*/
+			const hostNavigation = createHostNavigation();
+			/**
 			* The market's own panel, as an element — one builder for the settings
 			* section this package registers and for `market.render()` (#602). Built
 			* per call: the props are live (locale, theme, the host's preferred
@@ -16357,6 +16395,7 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 				},
 				preferredSubsectionId: ownerProps.preferredSubsectionId,
 				sidebar,
+				hostNavigation,
 				surface: ownerProps.surface ?? "settings"
 			});
 			const sectionGate = createSectionGate(() => {
@@ -16414,6 +16453,11 @@ window.__ModuleLoader__.load({ id: "dshmarket", factory: (require) => {
 			}, 0);
 			ctx.inject(["layout"], (scoped) => {
 				layout = scoped.layout;
+			});
+			ctx.inject(["pluginNavigation"], (scoped) => {
+				hostNavigation.attach({ openBundle: (name) => {
+					scoped.pluginNavigation.openBundle(name);
+				} });
 			});
 			const retire = () => {
 				sectionGate.retire();
