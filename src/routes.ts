@@ -31,6 +31,7 @@ import {
   type PluginCommandRuntime,
 } from './dsh-cli.ts'
 import { packageOfEntryName } from './entry-identity.ts'
+import { PendingRowJournal, repairOrphanedRows } from './pending-rows.ts'
 import { addProfileBundle, bundleOptOutRowIds, bundlePatchInsertedIds, bundlesDroppedFromProfile, declareProfileDependency, dropFromManifest, generationManagedNames, hasLoadableEntry, holdsNativeAddon, INBOX_BUNDLES, isDshProfileName, profileDir, readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledPackageName, readInstalledRepoEvidence, readInstalledVersion, readLockCommits, readProfileBundles, readProfileManifestSnapshot, removeProfileBundle, restoreProfileManifest, setAllowBuilds, type ProfileManifestSnapshot } from './profile.ts'
 import { assessProfile, classifyPeer, introducedDuplicateNames, introducedRisks, type CompatibilityRisk } from './compatibility.ts'
 import { runningAgentIds, type AgentsLookup } from './agents.ts'
@@ -492,6 +493,18 @@ export function mountMarketRoutes(
     throw new Error(message)
   }
   const activeProfileDir = profileDir(config.profile, config.profileDirectory)
+  // #987: a remove that died between deleting the package and clearing the
+  // rows its bundle patch declares leaves an insert naming a missing module —
+  // and DSH's boot is all-or-nothing, so that row can keep the host from
+  // starting at all. The intent was journaled before the destructive step;
+  // settle it now, against what the profile actually holds.
+  try {
+    const settled = repairOrphanedRows({ profile: config.profile, profileDirectory: activeProfileDir })
+    if (settled.removed.length > 0) logEvent('info', 'uninstall', `cleared patch rows left by an interrupted uninstall: ${settled.removed.join(', ')}`)
+    if (settled.failed.length > 0) logEvent('warn', 'uninstall', `patch rows from an interrupted uninstall could not be cleared, will retry: ${settled.failed.join(', ')}`)
+  } catch (error) {
+    logEvent('warn', 'uninstall', `could not settle interrupted uninstall rows — ${error instanceof Error ? error.message : String(error)}`)
+  }
   const analyzeActiveProfile = () => analyzeProfile(activeProfileDir, {
     ...(config.dshInstallDir === undefined ? {} : { dshInstallDir: config.dshInstallDir }),
   })
@@ -1635,8 +1648,15 @@ export function mountMarketRoutes(
     // deletes. Read afterwards this returns [] and the rows survive the
     // package as boot-time orphans (#799).
     const ownedRows = rowIdsForPackage(host, activeProfileDir, name)
+    // #987: written down before the destructive step, because the process can
+    // be unloaded between the remove and the cleanup below — and a row whose
+    // package is gone can stop the next boot.
+    const rowJournal = PendingRowJournal.forProfile(activeProfileDir)
+    rowJournal.begin({ profile: config.profile, name, patchPath: userPatchPath, rows: ownedRows })
     const result = await runPlugin(config.profile, ['remove', name])
     if (result.exitCode !== 0 || result.timedOut || result.cancelled) {
+      // Nothing was removed: the rows are still configuration, not orphans.
+      rowJournal.finish(config.profile, name)
       return { ok: false, hot: false, detail: failureDetail(result) }
     }
     // A host that owns the composition replays it instead of being
@@ -1664,6 +1684,7 @@ export function mountMarketRoutes(
     }
     const cleanedOwned = removeRowBlocks(userPatchPath, ownedRows)
     if (!cleanedOwned.ok) logEvent('warn', 'uninstall', `patch rows could not be cleared — ${cleanedOwned.reason}`)
+    else rowJournal.finish(config.profile, name)
     disabled.delete(name)
     replacedWhileLive.delete(name)
     removeFromGroups({ groups, groupOrder }, name)
@@ -6041,6 +6062,13 @@ sendJson(response, 200, { updates })
             // interrupted mid-remove leaves the same "where did it go" with no
             // entry saying what was running.
             logEvent('info', 'uninstall-start', `${name} (profile ${config.profile})`)
+            // #987: the rows are journaled BEFORE the remove for the same
+            // reason they are read before it — and because this process can be
+            // unloaded in between (the official Desktop replays its plugin set
+            // after a profile change), which used to leave an insert naming a
+            // package that is no longer installed.
+            const rowJournal = PendingRowJournal.forProfile(activeProfileDir)
+            rowJournal.begin({ profile: config.profile, name, patchPath: userPatchPath, rows: ownedRows })
             const result = await runPlugin(config.profile, ['remove', name])
             const cancelled = result.cancelled
             let ok = result.exitCode === 0 && !result.timedOut && !cancelled
@@ -6064,6 +6092,9 @@ sendJson(response, 200, { updates })
               // client does not treat a finished uninstall as a failure.
               if (isHostPortCollision(result)) ok = true
             }
+            // The remove did not land and nothing half-gone was found: the
+            // package (and its rows) are exactly as they were.
+            if (!ok && !halfGone && !cancelled) rowJournal.finish(config.profile, name)
             let hot = false
             if (ok || halfGone) {
               invalidateUpdates()
@@ -6110,6 +6141,10 @@ sendJson(response, 200, { updates })
               // mounts is a boot-time orphan (port of dsh-plugin-hub).
               const cleanedOwned = removeRowBlocks(userPatchPath, ownedRows)
               if (!cleanedOwned.ok) logEvent('warn', 'uninstall', `patch rows could not be cleared — ${cleanedOwned.reason}`)
+              // Either way the record is settled: cleaned means nothing is
+              // left to do, and an unclean file is reported above rather than
+              // turned into a silent retry loop on every start.
+              else rowJournal.finish(config.profile, name)
               // The disable list must not keep a removed plugin: a later
               // reinstall starts enabled. Group memberships follow the same
               // rule so no group toggle ever targets a ghost member.
