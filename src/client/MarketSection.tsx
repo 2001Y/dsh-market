@@ -3500,6 +3500,7 @@ export function MarketSection(props: MarketSectionProps) {
                 heldRelease: body.heldRelease,
               }
             : body.compatibility?.code === 'soft-incompatible'
+              && (body.compatibility.risks.length > 0 || (body.compatibility.brokenBundles?.length ?? 0) > 0)
               ? { state: 'warned', reason: t('compatRiskBanner') }
               : { state: 'done', needsRefresh: body.hot !== true }))
           refreshInstalled()
@@ -6388,7 +6389,11 @@ export function MarketSection(props: MarketSectionProps) {
             )}
           </span>
           <Button variant="outline" size="sm" onClick={() => setTab('diagnostics')}>{t('goDiagnose')}</Button>
-          {compatibilityNotice.rollbackId === undefined
+          {compatibilityNotice.risks.length === 0 && (compatibilityNotice.brokenBundles?.length ?? 0) === 0
+            // Same-name rows alone are informational (#913): they prove nothing
+            // broke, so there is nothing to roll back and nothing to warn about.
+            ? null
+            : compatibilityNotice.rollbackId === undefined
             ? <span>{compatibilityNotice.rollbackUnavailable ? localizeBilingual(compatibilityNotice.rollbackUnavailable, lang) : t('rollbackUnavailable')}</span>
             : (
                 <Button variant="primary" size="sm" disabled={rollingBack} onClick={() => void doRollback(compatibilityNotice.rollbackId!)}>
