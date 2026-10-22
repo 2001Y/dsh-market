@@ -19,6 +19,7 @@ import { MarketErrorBoundary } from './ErrorBoundary.tsx'
 import { MarketSection } from './MarketSection.tsx'
 import type { MarketSectionProps } from './MarketSection.tsx'
 import type { Translate } from './market-data.ts'
+import type { HostNavigationStore } from './host-navigation.ts'
 import type { SidebarEntry } from './sidebar-entry.ts'
 
 /** Everything the panel needs from the client context, plus its own actions. */
@@ -35,6 +36,11 @@ export interface MarketElementProps {
   preferredSubsectionId?: string
   /** The opt-in sidebar row. Absent, the panel offers no shortcut tip. */
   sidebar?: SidebarEntry
+  /**
+   * The host's `pluginNavigation`, when it provides one. Absent, an installed
+   * plugin's menu offers no way to the host's own page for it.
+   */
+  hostNavigation?: HostNavigationStore
   /**
    * Where this panel is mounted. Only the settings page offers the sidebar
    * shortcut; the sidebar page must not offer itself, and the Plugins page's
@@ -68,6 +74,7 @@ export function marketElement(props: MarketElementProps): unknown {
     themeStore: props.themeStore,
     preferredSubsectionId: props.preferredSubsectionId,
     sidebar: props.sidebar,
+    hostNavigation: props.hostNavigation,
     surface: props.surface,
   }))
 }

@@ -393,6 +393,9 @@ export const zh = {
   installedDependencyNote: '另有 {0} 个包是插件带进来的依赖，不是插件，未列在上方。',
   heldReleaseAction: '仍安装 {0}',
   ignoreUpdateNotice: '重启前不再提醒',
+  // The host's own page for a plugin. Named for what the user gets there —
+  // the switches below the plugin (行), which the market does not draw.
+  openInHostPage: '在插件页查看',
   ignoreAllUpdateNotices: '重启前都不再提醒',
   updateNoticeIgnored: '重启前不再提醒',
   updateExemptAdd: '一直不提醒更新',
@@ -1160,6 +1163,7 @@ export const en: Record<MarketKey, string> = {
   installedDependencyNote: '{0} more packages came in as dependencies of plugins — they are not plugins, so they are not listed above.',
   heldReleaseAction: 'Install {0} anyway',
   ignoreUpdateNotice: "Don't remind until restart",
+  openInHostPage: 'View in Plugins',
   ignoreAllUpdateNotices: "Don't remind any until restart",
   updateNoticeIgnored: 'No reminders until restart',
   updateExemptAdd: 'Never remind about updates',

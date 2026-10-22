@@ -97,7 +97,7 @@ function hostWith(declared: readonly string[]) {
 
 it('keeps the main market on hosts without settingsScope (#516)', () => {
   const { registrations, injections } = hostWith(['settings.section', 'shell.overlay'])
-  expect(injections).toEqual([['layout'], ['settingsScope']])
+  expect(injections).toEqual([['layout'], ['pluginNavigation'], ['settingsScope']])
   expect(registrations).toEqual(['settings.section', 'shell.overlay'])
 })
 
@@ -107,7 +107,7 @@ it('offers the market as a Plugins-page tab on the line that declares one (#722)
   // all and vanished silently. The tab slot is what its contract offers for a
   // page inside the Plugins section, and it is the one the market must follow.
   const { registrations, injections } = hostWith(['settings.section', 'shell.overlay', 'settings.plugins.tab'])
-  expect(injections).toEqual([['layout'], ['settingsScope']])
+  expect(injections).toEqual([['layout'], ['pluginNavigation'], ['settingsScope']])
   expect(registrations).toEqual(['settings.section', 'settings.plugins.tab', 'shell.overlay'])
 })
 
@@ -144,7 +144,7 @@ it('places the settings card on the bundle page a 0.1.7 host declares (#677)', (
   // third-party bundle's configuration belongs. The card must follow the
   // slot, and the market must still register everything else.
   const { registrations, injections } = hostWith(['settings.section', 'shell.overlay', 'plugins.bundle.config'])
-  expect(injections).toEqual([['layout'], ['settingsScope']])
+  expect(injections).toEqual([['layout'], ['pluginNavigation'], ['settingsScope']])
   expect(registrations).toEqual(['settings.section', 'plugins.bundle.config', 'shell.overlay'])
 })
 
