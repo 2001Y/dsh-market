@@ -118,13 +118,25 @@ describe('profile backup and restore', () => {
     expect(backup.files.map(file => file.path)).toEqual(['.env', '.npmrc', 'package.json'])
   })
 
-  it('refuses to restore a path that walks through a hidden directory (#972)', () => {
+  it('restores config from an old backup and skips hidden cache paths (#972)', () => {
+    // Official exports before this fix included plugin log dirs whenever
+    // they still fit under 2 MB. Refusing the whole document would make
+    // those backups unrestorable — preview only reads package.json, so it
+    // would succeed and restore would fail. Skip the cache paths; write
+    // the real config back.
     const dir = profileDir('web')
     mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, 'package.json'), '{}')
+    writeFileSync(join(dir, 'package.json'), '{"dependencies":{"keep":"1.0.0"}}')
+    writeFileSync(join(dir, '.env'), 'SECRET=keep')
     const backup = createProfileBackup('web')
     backup.files.push({ path: '.plugin-manager/logs/pnpm.log', lines: ['stale'] })
-    expect(() => restoreProfileBackup('web', backup)).toThrow(/excluded backup path/)
+
+    writeFileSync(join(dir, 'package.json'), '{}')
+    writeFileSync(join(dir, '.env'), 'wiped')
+    restoreProfileBackup('web', backup)
+
+    expect(readFileSync(join(dir, 'package.json'), 'utf8')).toContain('keep')
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe('SECRET=keep')
     expect(existsSync(join(dir, '.plugin-manager', 'logs', 'pnpm.log'))).toBe(false)
   })
 

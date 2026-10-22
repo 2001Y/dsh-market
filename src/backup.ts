@@ -162,9 +162,13 @@ export function validatedBackup(value: unknown): ProfileBackup {
     if (typeof path !== 'string') throw new Error('invalid backup contents')
     if (path === '' || isAbsolute(path) || path.split(/[\\/]/).includes('..')) throw new Error(`unsafe backup path: ${path}`)
     const normalized = path.replaceAll('\\', '/')
-    if (normalized.split('/').some((part, index, parts) => SKIP_NAMES.has(part) || (part.startsWith('.') && index < parts.length - 1))) {
-      throw new Error(`excluded backup path: ${path}`)
-    }
+    const parts = normalized.split('/')
+    if (parts.some(part => SKIP_NAMES.has(part))) throw new Error(`excluded backup path: ${path}`)
+    // Official exports before #972 carried plugin cache/log dirs whenever
+    // they still fit under 2 MB. Those files are not configuration; dropping
+    // them keeps the rest of the backup restorable. Names this exporter has
+    // never written (SKIP_NAMES) still refuse the document.
+    if (parts.some((part, index) => part.startsWith('.') && index < parts.length - 1)) continue
     if (paths.has(normalized)) throw new Error(`duplicate backup path: ${path}`)
     paths.add(normalized)
     if (path === 'package.json') {
