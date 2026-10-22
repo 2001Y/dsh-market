@@ -10,9 +10,10 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import type { InstallResult, PluginRunner } from './dsh-cli.ts'
 import { findDshInstallDir } from './dsh-install.ts'
 import { classifyPnpmFailure, HOST_NAMESPACE_RE, isTransientPnpmFailure } from './pnpm-compat.ts'
-import { conflictingEntryIds, dropFromManifest, hasDshManifest, hasLoadableEntry, mergeDuplicateReleaseAgeExcludes, pluginSubdirs, profileDir, readGitResolutionCommit, readInstalled, readInstalledVersion, readManifestDeps, readProfileBundles, dropUnparseableBuildKeys } from './profile.ts'
+import { conflictingEntryIds, dropFromManifest, hasDshManifest, hasLoadableEntry, mergeDuplicateReleaseAgeExcludes, pluginSubdirs, profileDir, readGitResolutionCommit, readInstalled, readInstalledVersion, readLockCommits, readManifestDeps, readProfileBundles, dropUnparseableBuildKeys } from './profile.ts'
 import { logEvent } from './log.ts'
 import { registryNameOf } from './official-desktop.ts'
+import { hostedRepoKey } from './sources.ts'
 import { cleanOrphanedIgnored, cleanOrphanedStore } from './store.ts'
 
 /**
@@ -650,6 +651,10 @@ export function installApplied(profile: string, before: ReadonlySet<string>, exp
  *
  * Same question `isStaleUpdate` asks, but a missing after-value is "did not
  * land", not "not stale". The package must still be on disk.
+ *
+ * Git commits use the same two reads as `gitIdentityCommit` in routes.ts:
+ * `type: git` first, then the archive/codeload URL a floating `github:`
+ * install actually leaves.
  */
 export function updateApplied(check: {
   profile: string
@@ -666,11 +671,19 @@ export function updateApplied(check: {
   if (check.isGit) {
     const afterCommit = check.spec === undefined
       ? null
-      : readGitResolutionCommit(check.profile, check.spec, dir)
+      : installedGitCommit(check.profile, check.spec, dir)
     if (check.beforeCommit !== null && afterCommit !== null && afterCommit !== check.beforeCommit) return true
     return check.beforeVersion !== null && afterVersion !== null && afterVersion !== check.beforeVersion
   }
   return check.beforeVersion !== null && afterVersion !== null && afterVersion !== check.beforeVersion
+}
+
+/** Commit on disk for `spec` — `type: git`, then archive/codeload. */
+function installedGitCommit(profile: string, spec: string, explicitDir: string): string | null {
+  const fromGit = readGitResolutionCommit(profile, spec, explicitDir)
+  if (fromGit !== null) return fromGit
+  const key = hostedRepoKey(spec)
+  return key === null ? null : readLockCommits(profile, explicitDir).get(key) ?? null
 }
 
 /**

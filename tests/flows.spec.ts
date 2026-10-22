@@ -5023,6 +5023,44 @@ describe('update flow — no npm publishing required', () => {
     expect(fake.calls.slice(callsBefore).some(call => call.includes('dsh-loop@1.0.0'))).toBe(false)
   })
 
+  it('keeps a github: commit-only update when the host boot then hits EADDRINUSE (#975)', async () => {
+    // Floating github: often leaves a codeload lock and the same package.json
+    // version. The collision skip has to see that commit change, or it rolls
+    // the new build back the way #975 did for npm.
+    const OLD = 'a'.repeat(40)
+    const NEW = 'b'.repeat(40)
+    await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'dsh-loop' })
+    fake.repos['github:owner/dsh-loop'] = {
+      name: 'dsh-loop',
+      manifest: { name: 'dsh-loop', version: '1.0.0', dsh: {}, main: 'lib/index.js' },
+      artifacts: ['lib/index.js'],
+      lockCommit: NEW,
+      byCommit: {
+        [OLD]: { manifest: { name: 'dsh-loop', version: '1.0.0', dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] },
+      },
+    }
+    writeFileSync(join(fake.profileDir, 'package.json'), JSON.stringify({ dependencies: { 'dsh-loop': 'github:owner/dsh-loop' } }))
+    const pkgDir = join(fake.profileDir, 'node_modules', 'dsh-loop')
+    mkdirSync(join(pkgDir, 'lib'), { recursive: true })
+    writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: 'dsh-loop', version: '1.0.0', dsh: {}, main: 'lib/index.js' }))
+    writeFileSync(join(pkgDir, 'lib', 'index.js'), 'old-git-build')
+    writeFileSync(join(fake.profileDir, 'pnpm-lock.yaml'),
+      `lockfileVersion: 9\n  resolution: {tarball: https://codeload.github.com/owner/dsh-loop/tar.gz/${OLD}}\n`)
+    fake.failAfterWriteStderrOnce = [
+      'webserver (required) listen EADDRINUSE: address already in use 127.0.0.1:3080',
+      'Plugins waiting for services: client-hmr',
+      'Full diagnostics: C:\\Users\\u\\.dsh\\logs\\startup-2026-10-22T05-05-40.541Z-37a0b6ec-b8f2-4699-82ce-c53428afc403.log',
+    ].join('\n')
+
+    const callsBefore = fake.calls.length
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+    expect(r.status).toBe(200)
+    expect(r.json.ok).toBe(true)
+    expect(installedSpec('dsh-loop')).toBe('github:owner/dsh-loop')
+    expect(readFileSync(join(fake.profileDir, 'pnpm-lock.yaml'), 'utf8')).toContain(NEW)
+    expect(fake.calls.slice(callsBefore).some(call => call.includes(`github:owner/dsh-loop#${OLD}`))).toBe(false)
+  })
+
   it('restores prior bytes even when the failed update did not change the manifest range', async () => {
     advanceNpmLatest('1.2.0')
     fake.preserveManifestOnNextAdd = true

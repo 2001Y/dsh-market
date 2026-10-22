@@ -1041,6 +1041,31 @@ describe('host port collision after pnpm wrote (#975)', () => {
       beforeVersion: '1.0.0', beforeCommit: null, explicitDir: dir,
     })).toBe(false)
   })
+
+  it('updateApplied sees a commit change in the codeload lock a github: install leaves', () => {
+    // pnpm records floating github: as `resolution: {tarball: …/tar.gz/<sha>}`,
+    // not `type: git`. Version often stays put; the lock commit is the only
+    // proof the update landed. Reading only the git-resolution shape would
+    // say nothing changed and the route would roll the new build back.
+    const oldCommit = 'a'.repeat(40)
+    const newCommit = 'b'.repeat(40)
+    const dir = writeProfile({ themer: 'github:owner/themer' })
+    writePkg(dir, 'themer', { name: 'themer', version: '1.0.0', dsh: {}, main: 'lib/index.js' }, ['lib/index.js'])
+    writeFileSync(join(dir, 'pnpm-lock.yaml'),
+      `lockfileVersion: 9\n  resolution: {tarball: https://codeload.github.com/owner/themer/tar.gz/${newCommit}}\n`)
+    expect(updateApplied({
+      profile: 'web', name: 'themer', isGit: true,
+      beforeVersion: '1.0.0', beforeCommit: oldCommit,
+      spec: 'github:owner/themer', explicitDir: dir,
+    })).toBe(true)
+    writeFileSync(join(dir, 'pnpm-lock.yaml'),
+      `lockfileVersion: 9\n  resolution: {tarball: https://codeload.github.com/owner/themer/tar.gz/${oldCommit}}\n`)
+    expect(updateApplied({
+      profile: 'web', name: 'themer', isGit: true,
+      beforeVersion: '1.0.0', beforeCommit: oldCommit,
+      spec: 'github:owner/themer', explicitDir: dir,
+    })).toBe(false)
+  })
 })
 
 describe('isStaleUpdate (#22: clean exit, nothing changed)', () => {
