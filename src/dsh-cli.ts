@@ -478,7 +478,12 @@ function spawnShim(file: string, args: readonly string[], options: SpawnShimOpti
  */
 export function dshArgv(): { file: string; args: string[]; cwd: string | undefined; viaShell: boolean } {
   const entry = process.argv[1]
-  if (entry !== undefined && /[\\/](?:bin\.(?:js|ts)|dsh)$/.test(entry)) {
+  // Desktop's installed `dsh web` uses this CLI carrier too. Keep
+  // that installation's dispatcher instead of silently selecting a different
+  // dsh from PATH. Do not accept arbitrary applications named cli.js.
+  const desktopCli = entry !== undefined
+    && /[\\/]node_modules[\\/]@deepseek-ai[\\/]dsh-desktop-host[\\/]lib[\\/]cli\.js$/.test(entry)
+  if (entry !== undefined && (desktopCli || /[\\/](?:bin\.(?:js|ts)|dsh)$/.test(entry))) {
     // Absolute paths are required: source launches (`pnpm dsh`) pass a
     // relative entry, which the child resolves against its OWN cwd and dies
     // with MODULE_NOT_FOUND (#13). cwd near the entry keeps execArgv imports
