@@ -1,6 +1,6 @@
 /** Real child processes testing identity preservation, not the #975 startup failure. */
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -56,8 +56,11 @@ it('keeps the bundled carrier when PATH selects a different CLI', async () => {
   for (const args of [['add', 'fixture@1.0.0'], ['add', '--force', 'fixture@2.0.0'], ['remove', 'fixture'], ['install']]) {
     const result = await runDshPlugin('web', args)
     expect(result).toMatchObject({ exitCode: 0, timedOut: false, cancelled: false, stderr: '' })
+    // realpathSync on the expectation: macOS's own /var -> /private/var means
+    // the child reports the resolved path while the fixture was built from the
+    // tmpdir spelling (same reason as check.spec.ts's symlink case).
     expect(JSON.parse(result.stdout)).toEqual({
-      args: ['plugin', '--profile', 'web', ...args, '--reporter=ndjson'], cwd: dirname(entry),
+      args: ['plugin', '--profile', 'web', ...args, '--reporter=ndjson'], cwd: realpathSync(dirname(entry)),
     })
   }
 })
