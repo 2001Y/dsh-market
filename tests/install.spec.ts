@@ -10,9 +10,10 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { InstallResult } from '../src/dsh-cli.ts'
 import {
-  diagnosticsTail, failureDetail, FETCH_TIMEOUT_OVERRIDE, groupConflictsByOwner, hostNodeModulesRoot, isStaleUpdate, normalizedLinkTarget,
-  parseIgnoredBuildEntries, parseIgnoredBuilds, parsePrepareNotAllowed, pnpmNeverStarted, pnpmRefusedYoungRelease, refusedReleaseAgePackage, removeDanglingHostBridge, retargetCollections,
-  RELEASE_AGE_OVERRIDE, validateAddedPlugins, withHoistRecovery,
+  diagnosticsTail, failureDetail, FETCH_TIMEOUT_OVERRIDE, groupConflictsByOwner, hostNodeModulesRoot, installApplied,
+  isHostPortCollision, isStaleUpdate, normalizedLinkTarget, parseIgnoredBuildEntries, parseIgnoredBuilds,
+  parsePrepareNotAllowed, pnpmNeverStarted, pnpmRefusedYoungRelease, refusedReleaseAgePackage, removeDanglingHostBridge,
+  retargetCollections, RELEASE_AGE_OVERRIDE, updateApplied, validateAddedPlugins, withHoistRecovery,
 } from '../src/install.ts'
 import { dropUnparseableBuildKeys, profileDir } from '../src/profile.ts'
 import * as profileHelpers from '../src/profile.ts'
@@ -988,6 +989,82 @@ describe('pnpmRefusedYoungRelease (#919)', () => {
     expect(pnpmRefusedYoungRelease(failed({ stderr: '[ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION] young' }))).toBe(true)
     expect(pnpmRefusedYoungRelease(failed({ stderr: 'ERR_PNPM_NO_MATURE_MATCHING_VERSION No matching version' }))).toBe(true)
     expect(pnpmRefusedYoungRelease(failed({ stderr: 'ERR_PNPM_FETCH_404 GET https://registry.npmjs.org/ghost: Not Found - 404' }))).toBe(false)
+  })
+})
+
+describe('host port collision after pnpm wrote (#975)', () => {
+  const failed = (over: Partial<InstallResult>): InstallResult =>
+    ({ exitCode: 1, timedOut: false, stdout: '', stderr: '', cancelled: false, ...over })
+  const collision = [
+    'webserver (required) listen EADDRINUSE: address already in use 127.0.0.1:3080',
+    'Plugins waiting for services: client-hmr',
+    'Full diagnostics: C:\\Users\\u\\.dsh\\logs\\startup-2026-10-22T05-05-40.541Z-37a0b6ec-b8f2-4699-82ce-c53428afc403.log',
+  ].join('\n')
+
+  it('is true only for DSH listen EADDRINUSE plus Full diagnostics on a startup log', () => {
+    expect(isHostPortCollision(failed({ stderr: collision }))).toBe(true)
+    expect(isHostPortCollision(failed({ stdout: collision, stderr: '' }))).toBe(true)
+    expect(isHostPortCollision(failed({ stderr: 'listen EADDRINUSE 127.0.0.1:3080' }))).toBe(false)
+    expect(isHostPortCollision(failed({
+      stderr: 'Full diagnostics: C:\\Users\\u\\.dsh\\logs\\startup-2026-10-22T05-05-40.541Z-x.log',
+    }))).toBe(false)
+    expect(isHostPortCollision(failed({ stderr: 'EADDRINUSE: address already in use' }))).toBe(false)
+    expect(isHostPortCollision(failed({ stderr: '[ERR_PNPM_FETCH_404] GET https://registry.npmjs.org/ghost: Not Found - 404' }))).toBe(false)
+  })
+
+  it('installApplied is true only when this run added a loadable plugin', () => {
+    const dir = writeProfile({})
+    expect(installApplied('web', new Set(), dir)).toBe(false)
+    writePkg(dir, 'dsh-loop', { name: 'dsh-loop', version: '0.1.204', dsh: {}, main: 'lib/index.js' }, ['lib/index.js'])
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { 'dsh-loop': '^0.1.204' } }))
+    expect(installApplied('web', new Set(), dir)).toBe(true)
+    expect(installApplied('web', new Set(['dsh-loop']), dir)).toBe(false)
+    writePkg(dir, 'junk', { name: 'junk', version: '1.0.0' })
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { junk: '^1.0.0' } }))
+    expect(installApplied('web', new Set(), dir)).toBe(false)
+  })
+
+  it('updateApplied is true only when this run changed the installed version or commit', () => {
+    const dir = writeProfile({ 'dsh-loop': '^1.0.0' })
+    writePkg(dir, 'dsh-loop', { name: 'dsh-loop', version: '1.2.0', dsh: {}, main: 'lib/index.js' }, ['lib/index.js'])
+    expect(updateApplied({
+      profile: 'web', name: 'dsh-loop', isGit: false,
+      beforeVersion: '1.0.0', beforeCommit: null, explicitDir: dir,
+    })).toBe(true)
+    writePkg(dir, 'dsh-loop', { name: 'dsh-loop', version: '1.0.0', dsh: {}, main: 'lib/index.js' }, ['lib/index.js'])
+    expect(updateApplied({
+      profile: 'web', name: 'dsh-loop', isGit: false,
+      beforeVersion: '1.0.0', beforeCommit: null, explicitDir: dir,
+    })).toBe(false)
+    expect(updateApplied({
+      profile: 'web', name: 'missing', isGit: false,
+      beforeVersion: '1.0.0', beforeCommit: null, explicitDir: dir,
+    })).toBe(false)
+  })
+
+  it('updateApplied sees a commit change in the codeload lock a github: install leaves', () => {
+    // pnpm records floating github: as `resolution: {tarball: …/tar.gz/<sha>}`,
+    // not `type: git`. Version often stays put; the lock commit is the only
+    // proof the update landed. Reading only the git-resolution shape would
+    // say nothing changed and the route would roll the new build back.
+    const oldCommit = 'a'.repeat(40)
+    const newCommit = 'b'.repeat(40)
+    const dir = writeProfile({ themer: 'github:owner/themer' })
+    writePkg(dir, 'themer', { name: 'themer', version: '1.0.0', dsh: {}, main: 'lib/index.js' }, ['lib/index.js'])
+    writeFileSync(join(dir, 'pnpm-lock.yaml'),
+      `lockfileVersion: 9\n  resolution: {tarball: https://codeload.github.com/owner/themer/tar.gz/${newCommit}}\n`)
+    expect(updateApplied({
+      profile: 'web', name: 'themer', isGit: true,
+      beforeVersion: '1.0.0', beforeCommit: oldCommit,
+      spec: 'github:owner/themer', explicitDir: dir,
+    })).toBe(true)
+    writeFileSync(join(dir, 'pnpm-lock.yaml'),
+      `lockfileVersion: 9\n  resolution: {tarball: https://codeload.github.com/owner/themer/tar.gz/${oldCommit}}\n`)
+    expect(updateApplied({
+      profile: 'web', name: 'themer', isGit: true,
+      beforeVersion: '1.0.0', beforeCommit: oldCommit,
+      spec: 'github:owner/themer', explicitDir: dir,
+    })).toBe(false)
   })
 })
 

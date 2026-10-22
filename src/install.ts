@@ -10,9 +10,10 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import type { InstallResult, PluginRunner } from './dsh-cli.ts'
 import { findDshInstallDir } from './dsh-install.ts'
 import { classifyPnpmFailure, HOST_NAMESPACE_RE, isTransientPnpmFailure } from './pnpm-compat.ts'
-import { conflictingEntryIds, dropFromManifest, hasDshManifest, hasLoadableEntry, mergeDuplicateReleaseAgeExcludes, pluginSubdirs, profileDir, readInstalled, readManifestDeps, readProfileBundles, dropUnparseableBuildKeys } from './profile.ts'
+import { conflictingEntryIds, dropFromManifest, hasDshManifest, hasLoadableEntry, mergeDuplicateReleaseAgeExcludes, pluginSubdirs, profileDir, readGitResolutionCommit, readInstalled, readInstalledVersion, readLockCommits, readManifestDeps, readProfileBundles, dropUnparseableBuildKeys } from './profile.ts'
 import { logEvent } from './log.ts'
 import { registryNameOf } from './official-desktop.ts'
+import { hostedRepoKey } from './sources.ts'
 import { cleanOrphanedIgnored, cleanOrphanedStore } from './store.ts'
 
 /**
@@ -608,6 +609,81 @@ function formatRemainingReleaseAgeWait(remainingMs: number): { zh: string, en: s
  */
 export function pnpmBlockedByOpenFiles(result: InstallResult): boolean {
   return classifyPnpmFailure(`${result.stderr}\n${result.stdout}`, result.exitCode)?.code === 'windows-file-locked'
+}
+
+/**
+ * Whether a failed run is the running host colliding with a second profile
+ * boot (#975).
+ *
+ * Market install / update / uninstall spawn `dsh plugin …`. On a live
+ * `dsh web` that child can boot the profile again, bind the same port, and
+ * exit 1 AFTER pnpm has already written. The signature is DSH's own boot
+ * failure — `listen EADDRINUSE` plus `Full diagnostics` pointing at a
+ * `startup-*.log` — not a pnpm classifier code. All three pieces are
+ * required so a stray EADDRINUSE or an unrelated diagnostics line cannot
+ * flip a real failure into success.
+ */
+export function isHostPortCollision(result: { stdout: string; stderr: string }): boolean {
+  const text = `${result.stderr}\n${result.stdout}`
+  return /listen EADDRINUSE/i.test(text)
+    && /Full diagnostics/i.test(text)
+    && /startup-\S+\.log/i.test(text)
+}
+
+/**
+ * Whether this install left at least one new, loadable plugin on disk (#975).
+ *
+ * Read-only half of the #18 guard: a name that landed without a dsh surface
+ * or entry is not this operation's intent, so the caller still rolls back.
+ * The route then runs the full validator on the success path.
+ */
+export function installApplied(profile: string, before: ReadonlySet<string>, explicitDir?: string): boolean {
+  const dir = profileDir(profile, explicitDir)
+  return Object.keys(readInstalled(profile, dir)).some((name) => {
+    if (before.has(name)) return false
+    const packageDir = join(dir, 'node_modules', name)
+    return hasDshManifest(packageDir) && hasLoadableEntry(dir, name)
+  })
+}
+
+/**
+ * Whether this update changed the installed version or git commit (#975).
+ *
+ * Same question `isStaleUpdate` asks, but a missing after-value is "did not
+ * land", not "not stale". The package must still be on disk.
+ *
+ * Git commits use the same two reads as `gitIdentityCommit` in routes.ts:
+ * `type: git` first, then the archive/codeload URL a floating `github:`
+ * install actually leaves.
+ */
+export function updateApplied(check: {
+  profile: string
+  name: string
+  isGit: boolean
+  beforeVersion: string | null
+  beforeCommit: string | null
+  spec?: string
+  explicitDir?: string
+}): boolean {
+  const dir = profileDir(check.profile, check.explicitDir)
+  if (!existsSync(join(dir, 'node_modules', check.name, 'package.json'))) return false
+  const afterVersion = readInstalledVersion(check.profile, check.name, dir)
+  if (check.isGit) {
+    const afterCommit = check.spec === undefined
+      ? null
+      : installedGitCommit(check.profile, check.spec, dir)
+    if (check.beforeCommit !== null && afterCommit !== null && afterCommit !== check.beforeCommit) return true
+    return check.beforeVersion !== null && afterVersion !== null && afterVersion !== check.beforeVersion
+  }
+  return check.beforeVersion !== null && afterVersion !== null && afterVersion !== check.beforeVersion
+}
+
+/** Commit on disk for `spec` — `type: git`, then archive/codeload. */
+function installedGitCommit(profile: string, spec: string, explicitDir: string): string | null {
+  const fromGit = readGitResolutionCommit(profile, spec, explicitDir)
+  if (fromGit !== null) return fromGit
+  const key = hostedRepoKey(spec)
+  return key === null ? null : readLockCommits(profile, explicitDir).get(key) ?? null
 }
 
 /**

@@ -41,7 +41,7 @@ import { createProfileSnapshot, DEFAULT_MAX_SNAPSHOTS, deleteSnapshot, listSnaps
 import { readHostRecoveryView, restoreHostRecoveryBackup } from './host-recovery.ts'
 import { trialValidate } from './trial.ts'
 import { catalogRepoKey, findCatalogEntryForLocal, findInstalledAlias, gitCommitOfTarget, githubCommitOfTarget, githubTargetAtCommit, gitAllowBuildsKey, gitRefOfTarget, gitTargetAtCommit, gitUpdateTarget, hostedRepoKey, lookupRepoFromUrl, pinnedAllowBuildsKeys, installTargetFor, isGenerationLink, isLocalSpec, NPM_NAME_RE, repoOfTarget, restoreBlockedByWorkspace, restoreTargetForLocal, sourceFallbackFor, workspaceProtocolDeps } from './sources.ts'
-import { failureDetail, groupConflictsByOwner, isStaleUpdate, parseIgnoredBuildEntries, parseIgnoredBuilds, parsePrepareKey, parsePrepareNotAllowed, pnpmBlockedByOpenFiles, pnpmNeverStarted, pnpmRefusedYoungRelease, RELEASE_AGE_OVERRIDE, removeDanglingHostBridge, retargetCollections, validateAddedPlugins, withHoistRecovery } from './install.ts'
+import { failureDetail, groupConflictsByOwner, installApplied, isHostPortCollision, isStaleUpdate, parseIgnoredBuildEntries, parseIgnoredBuilds, parsePrepareKey, parsePrepareNotAllowed, pnpmBlockedByOpenFiles, pnpmNeverStarted, pnpmRefusedYoungRelease, RELEASE_AGE_OVERRIDE, removeDanglingHostBridge, retargetCollections, updateApplied, validateAddedPlugins, withHoistRecovery } from './install.ts'
 import { classifyPnpmFailure } from './pnpm-compat.ts'
 import { asChannel, CHANNELS, DIST_TAG, resolveChannel, type Channel } from './channels.ts'
 import {
@@ -4856,7 +4856,19 @@ sendJson(response, 200, { updates })
               // (#919). Same untouched profile; skipping the rollback keeps
               // the release-age reason visible instead of covering it with a
               // false "restoration could not be verified" alarm.
-              && !pnpmRefusedYoungRelease(result)) {
+              && !pnpmRefusedYoungRelease(result)
+              // The child booted the profile again and lost the host port
+              // AFTER pnpm wrote this update (#975). Rolling back would
+              // undo a build that is already on disk.
+              && !(isHostPortCollision(result) && updateApplied({
+                profile: config.profile,
+                name,
+                isGit,
+                beforeVersion,
+                beforeCommit,
+                spec,
+                explicitDir: activeProfileDir,
+              }))) {
               if (pnpmBlockedByOpenFiles(result)) {
                 const kept = keepLockedBuild()
                 rollbackOk = kept.ok
@@ -4910,6 +4922,18 @@ sendJson(response, 200, { updates })
               }
             }
             let ok = result.exitCode === 0 && !result.timedOut && !cancelled
+            if (!ok && !cancelled && isHostPortCollision(result) && updateApplied({
+              profile: config.profile,
+              name,
+              isGit,
+              beforeVersion,
+              beforeCommit,
+              spec,
+              explicitDir: activeProfileDir,
+            })) {
+              ok = true
+              logEvent('info', 'update', `${name}: command exited after the host port was already in use; the new build is on disk, treating as success (#975)`)
+            }
             let stale = false
             let versionFailureCode: 'DOWNGRADE_DETECTED' | 'RESOLVED_VERSION_MISMATCH' | null = null
             let versionFailureError: string | null = null
@@ -6013,7 +6037,7 @@ sendJson(response, 200, { updates })
             logEvent('info', 'uninstall-start', `${name} (profile ${config.profile})`)
             const result = await runPlugin(config.profile, ['remove', name])
             const cancelled = result.cancelled
-            const ok = result.exitCode === 0 && !result.timedOut && !cancelled
+            let ok = result.exitCode === 0 && !result.timedOut && !cancelled
             const cancelDiff = cancelled ? changedSince(beforeInstalled) : null
             // Half-uninstall guard: pnpm can fail a remove AFTER deleting
             // node_modules but BEFORE saving package.json (#65's write-order
@@ -6029,6 +6053,10 @@ sendJson(response, 200, { updates })
             if (halfGone) {
               reconciled = dropFromManifest(config.profile, name, activeProfileDir)
               logEvent('warn', 'uninstall', `${name}: remove failed (exit ${String(result.exitCode)}) but the package is gone from disk; ${reconciled ? 'reconciled manifest lists to match' : 'manifest lists already clean'}`)
+              // Same disk truth, but the failure is the host port collision
+              // after a successful remove (#975): report success so the
+              // client does not treat a finished uninstall as a failure.
+              if (isHostPortCollision(result)) ok = true
             }
             let hot = false
             if (ok || halfGone) {
@@ -6465,7 +6493,10 @@ sendJson(response, 200, { updates })
               }
             }
             const cancelled = result.cancelled
-            if ((result.exitCode !== 0 || result.timedOut) && !cancelled) {
+            const portCollisionLanded = !cancelled
+              && isHostPortCollision(result)
+              && installApplied(config.profile, before, activeProfileDir)
+            if ((result.exitCode !== 0 || result.timedOut) && !cancelled && !portCollisionLanded) {
               const rolledBack = restoreProfileManifest(config.profile, manifestBefore, activeProfileDir)
               if (rolledBack.length > 0) logEvent('warn', 'install', `${target}: rolled back manifest residue of the failed run: ${rolledBack.join(', ')}`)
               if (lockfileBefore.ok) {
@@ -6473,7 +6504,10 @@ sendJson(response, 200, { updates })
                 if (!lock.ok) logEvent('warn', 'install', `${target}: could not restore pnpm-lock.yaml after the failed run: ${lock.detail ?? 'unknown'}`)
               }
             }
-            let ok = result.exitCode === 0 && !result.timedOut && !cancelled
+            let ok = (result.exitCode === 0 && !result.timedOut && !cancelled) || portCollisionLanded
+            if (portCollisionLanded && result.exitCode !== 0) {
+              logEvent('info', 'install', `${target}: command exited after the host port was already in use; the new plugin is on disk, treating as success (#975)`)
+            }
             const cancelDiff = cancelled ? changedSince(beforeSpecs) : null
             if (ok) invalidateUpdates()
             if (ok) {
@@ -6492,7 +6526,7 @@ sendJson(response, 200, { updates })
             let addedNothing = false
             let removedBroken: string[] = []
             let conflicts: { name: string; id: string; owner: string }[] = []
-            if (result.exitCode === 0 && !result.timedOut && !cancelled) {
+            if ((result.exitCode === 0 || portCollisionLanded) && !cancelled) {
               const validated = await validateAddedPlugins(runPlugin, config.profile, before, activeProfileDir)
               removedBroken = validated.removedBroken
               conflicts = validated.conflicts
