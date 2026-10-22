@@ -101,6 +101,54 @@ describe('profile backup and restore', () => {
     expect(paths).toEqual(['bakery.yml', 'my.backup.yml', 'package.json'])
   })
 
+  it('skips hidden plugin cache directories but keeps hidden config files (#972)', () => {
+    // Plugins write logs under their own dot-directories inside the profile.
+    // Walking those in made a 19 KB config look like a 5 MB backup and
+    // tripped the 2 MB cap. Hidden FILES (.env, .npmrc) are still config.
+    const dir = profileDir('web')
+    mkdirSync(join(dir, '.dsh-mattskillsdeck-cache', 'logs'), { recursive: true })
+    mkdirSync(join(dir, '.plugin-manager', 'logs', 'operation-1'), { recursive: true })
+    writeFileSync(join(dir, 'package.json'), '{"dependencies":{}}')
+    writeFileSync(join(dir, '.env'), 'SECRET=keep')
+    writeFileSync(join(dir, '.npmrc'), 'registry=https://registry.npmjs.org/')
+    writeFileSync(join(dir, '.dsh-mattskillsdeck-cache', 'logs', '2026-10-21.log'), 'x'.repeat(3 * 1024 * 1024))
+    writeFileSync(join(dir, '.plugin-manager', 'logs', 'operation-1', 'pnpm.log'), 'not config')
+
+    const backup = createProfileBackup('web')
+    expect(backup.files.map(file => file.path)).toEqual(['.env', '.npmrc', 'package.json'])
+  })
+
+  it('restores config from an old backup and skips hidden cache paths (#972)', () => {
+    // Official exports before this fix included plugin log dirs whenever
+    // they still fit under 2 MB. Refusing the whole document would make
+    // those backups unrestorable — preview only reads package.json, so it
+    // would succeed and restore would fail. Skip the cache paths; write
+    // the real config back.
+    const dir = profileDir('web')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'package.json'), '{"dependencies":{"keep":"1.0.0"}}')
+    writeFileSync(join(dir, '.env'), 'SECRET=keep')
+    const backup = createProfileBackup('web')
+    backup.files.push({ path: '.plugin-manager/logs/pnpm.log', lines: ['stale'] })
+
+    writeFileSync(join(dir, 'package.json'), '{}')
+    writeFileSync(join(dir, '.env'), 'wiped')
+    restoreProfileBackup('web', backup)
+
+    expect(readFileSync(join(dir, 'package.json'), 'utf8')).toContain('keep')
+    expect(readFileSync(join(dir, '.env'), 'utf8')).toBe('SECRET=keep')
+    expect(existsSync(join(dir, '.plugin-manager', 'logs', 'pnpm.log'))).toBe(false)
+  })
+
+  it('explains the size cap in the user\'s language', () => {
+    const dir = profileDir('web')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'package.json'), '{}')
+    writeFileSync(join(dir, 'huge.yml'), 'x'.repeat(3 * 1024 * 1024))
+    expect(() => createProfileBackup('web')).toThrow(/整份备份放不下/)
+    expect(() => createProfileBackup('web')).toThrow(/Export selected plugins/)
+  })
+
   it('rejects traversal paths without touching the profile', () => {
     const dir = profileDir('web')
     mkdirSync(dir, { recursive: true })

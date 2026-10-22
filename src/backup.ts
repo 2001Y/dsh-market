@@ -20,6 +20,7 @@ export const BACKUP_FORMAT = 'dsh-profile-backup'
 export const MAX_BACKUP_BYTES = 2 * 1024 * 1024
 const MAX_FILES = 256
 const SKIP_NAMES = new Set(['node_modules', '.dsh-market', '.git', 'pnpm-lock.yaml'])
+const BACKUP_TOO_LARGE = `这个 profile 的配置超过 ${MAX_BACKUP_BYTES / (1024 * 1024)} MB，整份备份放不下。可以只导出选中的插件。 / this profile's configuration is larger than ${MAX_BACKUP_BYTES / (1024 * 1024)} MB, which is too much for one whole-profile backup. Export selected plugins instead.`
 /** File names that routinely contain credentials (backup exports).
  *  Values are never masked in place — the export is one-to-one for
  *  faithful restores — but presence is surfaced by the UI warning. */
@@ -55,6 +56,11 @@ function profileFiles(root: string, dir = root): string[] {
     // backup that carried them restored them too, so the profile came back
     // with the wreckage that made it need repairing (#205 by @Rudyy898).
     if (SKIP_NAMES.has(entry.name) || /\.bak\b/.test(entry.name)) continue
+    // Plugin caches live in hidden directories (`.dsh-mattskillsdeck-cache`,
+    // `.plugin-manager`, …). Walking them counted megabytes of logs as
+    // "configuration" and blew the 2 MB cap (#972). Hidden FILES stay —
+    // `.env` and `.npmrc` are real profile config.
+    if (entry.isDirectory() && entry.name.startsWith('.')) continue
     const path = resolve(dir, entry.name)
     if (entry.isSymbolicLink()) continue
     if (entry.isDirectory()) files.push(...profileFiles(root, path))
@@ -124,7 +130,7 @@ export function createProfileBackup(profile: string, explicitDir?: string, opts?
       }
     }
     const partial: ProfileBackup = { format: BACKUP_FORMAT, version: 0.2, createdAt: new Date().toISOString(), profile, files }
-    if (Buffer.byteLength(JSON.stringify(partial)) > MAX_BACKUP_BYTES) throw new Error('profile configuration is too large to back up')
+    if (Buffer.byteLength(JSON.stringify(partial)) > MAX_BACKUP_BYTES) throw new Error(BACKUP_TOO_LARGE)
     return partial
   }
 
@@ -136,7 +142,7 @@ export function createProfileBackup(profile: string, explicitDir?: string, opts?
   })
   if (!files.some(file => file.path === 'package.json')) throw new Error('profile package.json is missing')
   const backup: ProfileBackup = { format: BACKUP_FORMAT, version: 0.2, createdAt: new Date().toISOString(), profile, files }
-  if (Buffer.byteLength(JSON.stringify(backup)) > MAX_BACKUP_BYTES) throw new Error('profile configuration is too large to back up')
+  if (Buffer.byteLength(JSON.stringify(backup)) > MAX_BACKUP_BYTES) throw new Error(BACKUP_TOO_LARGE)
   return backup
 }
 
@@ -156,7 +162,13 @@ export function validatedBackup(value: unknown): ProfileBackup {
     if (typeof path !== 'string') throw new Error('invalid backup contents')
     if (path === '' || isAbsolute(path) || path.split(/[\\/]/).includes('..')) throw new Error(`unsafe backup path: ${path}`)
     const normalized = path.replaceAll('\\', '/')
-    if (normalized.split('/').some(part => SKIP_NAMES.has(part))) throw new Error(`excluded backup path: ${path}`)
+    const parts = normalized.split('/')
+    if (parts.some(part => SKIP_NAMES.has(part))) throw new Error(`excluded backup path: ${path}`)
+    // Official exports before #972 carried plugin cache/log dirs whenever
+    // they still fit under 2 MB. Those files are not configuration; dropping
+    // them keeps the rest of the backup restorable. Names this exporter has
+    // never written (SKIP_NAMES) still refuse the document.
+    if (parts.some((part, index) => part.startsWith('.') && index < parts.length - 1)) continue
     if (paths.has(normalized)) throw new Error(`duplicate backup path: ${path}`)
     paths.add(normalized)
     if (path === 'package.json') {
