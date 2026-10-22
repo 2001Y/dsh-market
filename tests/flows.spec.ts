@@ -94,6 +94,8 @@ const fake = vi.hoisted(() => ({
    * misses its modules and the profile dies to activate).
    */
   failNextRemoveHalfGone: false,
+  /** stderr for failNextRemoveHalfGone; default is the EPERM half-unlink. */
+  failNextRemoveHalfGoneStderr: '',
   /**
    * Fail the next remove with exit 1 and this stderr, touching nothing —
    * a non-retryable pnpm failure (EPERM etc.) with the package intact.
@@ -348,7 +350,11 @@ vi.mock('../src/dsh-cli.ts', () => {
       if (fake.failNextRemoveHalfGone) {
         fake.failNextRemoveHalfGone = false
         rmSync(join(fake.profileDir, 'node_modules', target), { recursive: true, force: true })
-        return { exitCode: 1, timedOut: false, stdout: '', cancelled: false, stderr: 'EPERM: operation not permitted, unlink …\\node_modules\\dsh-loop\\package.json' }
+        const stderr = fake.failNextRemoveHalfGoneStderr !== ''
+          ? fake.failNextRemoveHalfGoneStderr
+          : 'EPERM: operation not permitted, unlink …\\node_modules\\dsh-loop\\package.json'
+        fake.failNextRemoveHalfGoneStderr = ''
+        return { exitCode: 1, timedOut: false, stdout: '', cancelled: false, stderr }
       }
       removeDep(target)
       return ok
@@ -922,6 +928,9 @@ beforeEach(() => {
   fake.failNextAddStderrOnce = ''
   fake.failNextAddStderrTimes = 1
   fake.failAfterWriteStderrOnce = ''
+  fake.failNextRemoveHalfGone = false
+  fake.failNextRemoveHalfGoneStderr = ''
+  fake.failNextRemoveOnce = ''
   fake.preserveManifestOnNextAdd = false
   fake.artifactContentsOnNextAdd = null
   fake.failAddTargetOnce = null
@@ -1634,6 +1643,30 @@ describe('install flow', () => {
     const listed = await bed.dispatch('GET', '/dsh-market/installed')
     expect(listed.json.installed['dsh-loop']).toBe('^1.0.0')
     expect(listed.json.activation['dsh-loop'].state).toBe('live')
+  })
+
+  it('treats an install as success when pnpm wrote then the host boot hit EADDRINUSE (#975)', async () => {
+    fake.npm['dsh-loop'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
+    fake.failAfterWriteStderrOnce = [
+      'webserver (required) listen EADDRINUSE: address already in use 127.0.0.1:3080',
+      'Plugins waiting for services: client-hmr',
+      'Full diagnostics: C:\\Users\\u\\.dsh\\logs\\startup-2026-10-22T05-05-40.541Z-37a0b6ec-b8f2-4699-82ce-c53428afc403.log',
+    ].join('\n')
+    const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+    expect(r.status).toBe(200)
+    expect(r.json.ok).toBe(true)
+    expect(installedSpec('dsh-loop')).toBe('^1.0.0')
+    expect(r.json.hot).toBe(true)
+    expect(r.json.activation['dsh-loop']).toMatchObject({ state: 'live', hot: true })
+  })
+
+  it('still rolls an install back when the failure is not a host port collision (#975)', async () => {
+    fake.npm['dsh-loop'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
+    fake.failAfterWriteStderrOnce = '[ERR_PNPM_FETCH_404] GET https://registry.npmjs.org/ghost: Not Found - 404'
+    const r = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+    expect(r.status).toBe(502)
+    expect(r.json.ok).toBe(false)
+    expect(installedSpec('dsh-loop')).toBeUndefined()
   })
 
   describe('a prebuilt release archive pnpm cannot verify (#797)', () => {
@@ -4973,6 +5006,23 @@ describe('update flow — no npm publishing required', () => {
     expect(String(r.json.stderr)).toContain('some-ghost-dep')
   })
 
+  it('keeps the new update when the host boot then hits EADDRINUSE (#975)', async () => {
+    advanceNpmLatest('1.2.0')
+    fake.failAfterWriteStderrOnce = [
+      'webserver (required) listen EADDRINUSE: address already in use 127.0.0.1:3080',
+      'Plugins waiting for services: client-hmr',
+      'Full diagnostics: C:\\Users\\u\\.dsh\\logs\\startup-2026-10-22T05-05-40.541Z-37a0b6ec-b8f2-4699-82ce-c53428afc403.log',
+    ].join('\n')
+    const callsBefore = fake.calls.length
+    const r = await bed.dispatch('POST', '/dsh-market/update', { name: 'dsh-loop' })
+    expect(r.status).toBe(200)
+    expect(r.json.ok).toBe(true)
+    expect(installedSpec('dsh-loop')).toBe('^1.2.0')
+    const installed = JSON.parse(readFileSync(join(fake.profileDir, 'node_modules', 'dsh-loop', 'package.json'), 'utf8')) as { version?: string }
+    expect(installed.version).toBe('1.2.0')
+    expect(fake.calls.slice(callsBefore).some(call => call.includes('dsh-loop@1.0.0'))).toBe(false)
+  })
+
   it('restores prior bytes even when the failed update did not change the manifest range', async () => {
     advanceNpmLatest('1.2.0')
     fake.preserveManifestOnNextAdd = true
@@ -6028,6 +6078,21 @@ describe('uninstall flow', () => {
     expect(installedSpec('dsh-loop')).toBeUndefined()
     const manifest = JSON.parse(readFileSync(join(profileDir('web'), 'package.json'), 'utf8')) as { dsh?: { profile?: { bundles?: string[] } } }
     expect(manifest.dsh?.profile?.bundles ?? []).not.toContain('dsh-loop')
+  })
+
+  it('reports uninstall success when the package is gone and the host boot hit EADDRINUSE (#975)', async () => {
+    fake.npm['dsh-loop'] = { latest: '1.0.0', versions: { '1.0.0': { manifest: { dsh: {}, main: 'lib/index.js' }, artifacts: ['lib/index.js'] } } }
+    await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-loop' })
+    fake.failNextRemoveHalfGone = true
+    fake.failNextRemoveHalfGoneStderr = [
+      'webserver (required) listen EADDRINUSE: address already in use 127.0.0.1:3080',
+      'Plugins waiting for services: client-hmr',
+      'Full diagnostics: C:\\Users\\u\\.dsh\\logs\\startup-2026-10-22T05-05-40.541Z-37a0b6ec-b8f2-4699-82ce-c53428afc403.log',
+    ].join('\n')
+    const r = await bed.dispatch('POST', '/dsh-market/uninstall', { name: 'dsh-loop' })
+    expect(r.status).toBe(200)
+    expect(r.json.ok).toBe(true)
+    expect(installedSpec('dsh-loop')).toBeUndefined()
   })
 
   it('keeps the manifest when a failed remove left the package intact', async () => {
