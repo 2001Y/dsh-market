@@ -489,7 +489,10 @@ export function dshArgv(): { file: string; args: string[]; cwd: string | undefin
     // with MODULE_NOT_FOUND (#13). cwd near the entry keeps execArgv imports
     // (tsx/esm) resolvable on source launches.
     const abs = resolve(entry)
-    return { file: nodeExecutable(), args: [...process.execArgv, abs], cwd: dirname(abs), viaShell: false }
+    // The official bundled CLI inherits the launcher's cwd. Its entry can
+    // live inside app.asar: Electron can read it, but the OS cannot chdir there.
+    // Do not probe that directory through Electron's virtual filesystem.
+    return { file: nodeExecutable(), args: [...process.execArgv, abs], cwd: desktopCli ? undefined : dirname(abs), viaShell: false }
   }
   // Bare `dsh` is a .cmd shim on Windows that only a shell can start (#13).
   return { file: 'dsh', args: [], cwd: undefined, viaShell: winCmdShim }
