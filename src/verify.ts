@@ -61,6 +61,8 @@ export interface ActivationResult {
    * restart nor calls the plugin off; it says where the plugin comes from.
    */
   loadedByProfile?: true
+  /** The package explicitly declares itself a library, without a plugin surface. */
+  library?: true
 }
 
 /**
@@ -113,6 +115,12 @@ function readBundles(profile: string, explicitDir?: string): Set<string> {
 interface PkgDsh {
   bundle?: unknown
   client?: unknown
+  kind?: unknown
+}
+
+/** Manifest-only library declaration; observed loader activity can override its status. */
+export function isDeclaredLibraryDsh(dsh: PkgDsh | null | undefined): boolean {
+  return dsh?.kind === 'library' && dsh.bundle === undefined && dsh.client === undefined
 }
 
 /**
@@ -448,6 +456,7 @@ export function verifyActivation(
   explicitDir?: string,
   isDisabled = false,
   hostFacts?: HostRuntimeFacts,
+  loaderObserved = false,
 ): ActivationResult {
   const activeProfileDir = profileDir(profile, explicitDir)
   const bundles = readBundles(profile, activeProfileDir)
@@ -457,11 +466,15 @@ export function verifyActivation(
   if (dsh === null) {
     return { state: 'missing', reasons: ['未安装 / not installed'], bundle: inBundles, hot: false }
   }
+  const declaredLibrary = isDeclaredLibraryDsh(dsh)
+  // A loader entry can remain after its fiber is switched off. Retain that
+  // evidence so an observed library can be re-enabled after disabling it.
+  const loaderLive = liveIncludes(live, name) || carriedRowLive(live, activeProfileDir, name)
 
   // A user-disabled plugin reads as disabled, never as "restart to apply":
   // the switch state (market disable list or the user patch layer) is the
   // dominant fact, and the loader keeps it off on every boot.
-  if (isDisabled) {
+  if (isDisabled && (!declaredLibrary || loaderLive || loaderObserved)) {
     return {
       state: 'disabled',
       reasons: ['已停用(市场开关或补丁层),重启后保持关闭 / disabled (market toggle or the patch layer) — stays off across restarts'],
@@ -477,7 +490,6 @@ export function verifyActivation(
   // loaded by name from a bundle patch — @deepseek-ai/dsh-tools is loaded by
   // the official dsh-base patch and has no `dsh` field at all — so this check
   // has to come before any manifest-based verdict.
-  const loaderLive = liveIncludes(live, name) || carriedRowLive(live, activeProfileDir, name)
   if (!hasDshManifest(dir)) {
     if (loaderLive) {
       return {
@@ -523,6 +535,18 @@ export function verifyActivation(
         ? `这是集合仓库的根包,本身不是插件。可安装的子包：${shown}${more}。请装子包而不是它(仓库地址后加 #path:/子包目录) / this is a collection repository's root package, not a plugin itself; install one of its plugins instead — ${shownEn}${moreEn} — by adding #path:/<subdirectory> to the repository URL`
         : '普通依赖(未声明 dsh 元数据),不是 profile 层插件;若它由某个 bundle patch 按名加载,启动后会显示为已加载 / a plain dependency with no dsh metadata — not a profile-layer plugin; if some bundle patch loads it by name it will read as live once running'],
       bundle: false,
+      hot: false,
+    }
+  }
+  // A declared library is shared code, not a plugin waiting to start. This
+  // manifest fact does not overrule an observed loader entry or a real plugin
+  // surface, and a library need not have a loadable plugin entry artifact.
+  if (!loaderLive && !loaderObserved && declaredLibrary) {
+    return {
+      state: 'inert',
+      library: true,
+      reasons: ['供其他插件使用，无需启用 / for other plugins to use; no need to enable it'],
+      bundle: inBundles,
       hot: false,
     }
   }

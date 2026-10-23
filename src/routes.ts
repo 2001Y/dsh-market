@@ -58,7 +58,7 @@ import { readJsonBody, refuseUnadmitted, sameOrigin, sendJson } from './http.ts'
 import { resolveDshHome } from './home-paths.ts'
 import { detectedDebugger, detectedSupervisor, restartAllowed, scheduleRestart, servingPort, trustedRestartRequest, trustedDownloadRequest, trustedSelfUninstallRequest, selfUninstallReachableFrom, type RecoveryHandoffConfig, restartReachableFrom } from './restart.ts'
 import type { RecoveryPlugin } from './recovery.ts'
-import { activationAfterReplace, brokenClientBundles, bundlePatchIsEmpty, checkClientBundle, defaultHostRuntimeFacts, findUnservedConfigNamespaces, hasHostHalf, hostPeerGate, newlyBrokenBundles, peerGateRemedy, verifyActivation } from './verify.ts'
+import { activationAfterReplace, brokenClientBundles, bundlePatchIsEmpty, checkClientBundle, defaultHostRuntimeFacts, findUnservedConfigNamespaces, hasHostHalf, hostPeerGate, isDeclaredLibraryDsh, newlyBrokenBundles, peerGateRemedy, verifyActivation } from './verify.ts'
 import {
   carrierRowIds, disableRow, enableRow, findUserPatchPath, foreignRowIds, isProtectedModule, packagePatchFlags,
   readUserPatchState, removeRowBlocks, rowIdsForPackage, userPatchPackageReferences,
@@ -1203,6 +1203,27 @@ export function mountMarketRoutes(
       }
     }
     return live
+  }
+
+  /** A disabled loader row has no fiber but still makes its package switchable. */
+  function loaderEntryObserved(name: string): boolean {
+    const entries = [...host.loader.entries()]
+    if (entries.some(entry => {
+      const entryName = entry.options.name
+      return typeof entryName === 'string' && (entryName === name || packageOfEntryName(entryName) === name)
+    })) return true
+    const ownedRows = new Set(rowIdsForPackage(host, activeProfileDir, name))
+    return entries.some(entry => {
+      const id = entry.options.id
+      return typeof id === 'string' && ownedRows.has(id.split(':').pop() ?? id)
+    })
+  }
+
+  function isNonToggleableLibrary(name: string): boolean {
+    const manifest = readInstalledManifest(config.profile, name, activeProfileDir) as { dsh?: { kind?: unknown; bundle?: unknown; client?: unknown } } | null
+    if (!isDeclaredLibraryDsh(manifest?.dsh)) return false
+    return verifyActivation(config.profile, name, liveNames(), activeProfileDir, disabled.has(name), undefined,
+      loaderEntryObserved(name)).library === true
   }
 
   /**
@@ -2725,9 +2746,12 @@ export function mountMarketRoutes(
             && !bundlePatchIsEmpty(join(activeProfileDir, 'node_modules', name))
         })
         for (const name of Object.keys(installed)) {
+          const manifest = installedManifests.get(name) as { dsh?: { kind?: unknown; bundle?: unknown; client?: unknown } } | null | undefined
           const result = activationAfterReplace(
             verifyActivation(config.profile, name, live, activeProfileDir,
-              disabled.has(name) || patchFlags.disabled.includes(name) || unbundled.includes(name)),
+              disabled.has(name) || patchFlags.disabled.includes(name) || unbundled.includes(name),
+              undefined,
+              isDeclaredLibraryDsh(manifest?.dsh) && loaderEntryObserved(name)),
             replacedWhileLive.has(name),
           )
           // A package with no dsh surface of its own, outside the bundle
@@ -3254,6 +3278,10 @@ export function mountMarketRoutes(
               sendJson(response, 400, { error: 'plugin is not installed' })
               return
             }
+            if (isNonToggleableLibrary(name)) {
+              sendJson(response, 400, { error: '这是供插件使用的依赖库，无需启用或停用 / this library is for plugins to use; it has no on/off switch' })
+              return
+            }
           // Host infrastructure (port of dsh-plugin-hub): switching off the
           // timer/hmr/webserver/storage chain would break the very HMR the
           // patch layer relies on, so those rows refuse to toggle.
@@ -3339,7 +3367,8 @@ export function mountMarketRoutes(
               // activationAfterReplace — said `restart`. One moment, one story.
               activation: {
                 [name]: activationAfterReplace(
-                  verifyActivation(config.profile, name, liveNames(), activeProfileDir, offNow),
+                  verifyActivation(config.profile, name, liveNames(), activeProfileDir, offNow, undefined,
+                    loaderEntryObserved(name)),
                   replacedWhileLive.has(name),
                 ),
               },
@@ -3668,6 +3697,7 @@ export function mountMarketRoutes(
             const failures: string[] = []
             for (const member of groups[name]) {
               if (!installed.has(member)) continue
+              if (isNonToggleableLibrary(member)) continue
               let result: { ok: boolean; reason?: string }
               if (enabled && themeNames.has(member)) {
                 result = { ok: await themes.activateTheme(member), reason: undefined }
