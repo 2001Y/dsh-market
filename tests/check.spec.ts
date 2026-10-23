@@ -1241,6 +1241,45 @@ describe('peer checks cover every plugin (#98 opt: plugin-to-plugin peers)', () 
     expect(report.summary.warnings.some(w => w.includes('community-lib'))).toBe(true)
   })
 
+  it('admits a prerelease host line a range written for it can only be met by (#1000)', () => {
+    // A healthy NEXT profile carried six permanent warnings because
+    // `>=0.2.0-rc.0 <0.3.0` does not admit `0.2.1-rc.2` under npm's DEFAULT
+    // rule (a prerelease needs a comparator on its own tuple). The discovery
+    // and verify checks already opt into includePrerelease for exactly this
+    // reason; the peer check now asks the same question the same way.
+    const dir = pdir()
+    writeProfile(dir, { name: 'web-profile', dependencies: {} })
+    writePackage(dir, 'plugin-rc', {
+      name: 'plugin-rc',
+      version: '1.0.0',
+      peerDependencies: { 'rc-lib': '>=0.2.0-rc.0 <0.3.0' },
+    })
+    writePackage(dir, 'rc-lib', { name: 'rc-lib', version: '0.2.1-rc.2' })
+
+    const report = analyzeProfile(dir)
+    const mismatch = report.peerMismatches.find(m => m.plugin === 'plugin-rc' && m.name === 'rc-lib')
+    expect(mismatch?.satisfied).toBe(true)
+    expect(report.summary.warnings.some(w => w.includes('rc-lib'))).toBe(false)
+  })
+
+  it('still refuses a prerelease BELOW the range, and one across a ^ ceiling (#1000)', () => {
+    // The flag must not turn the check off: an rc older than the floor is a
+    // real mismatch, and `^0.1.0` still excludes the next minor.
+    const dir = pdir()
+    writeProfile(dir, { name: 'web-profile', dependencies: {} })
+    writePackage(dir, 'plugin-floor', {
+      name: 'plugin-floor',
+      version: '1.0.0',
+      peerDependencies: { 'floor-lib': '>=0.2.1-rc.5', 'caret-lib': '^0.1.0' },
+    })
+    writePackage(dir, 'floor-lib', { name: 'floor-lib', version: '0.2.1-rc.2' })
+    writePackage(dir, 'caret-lib', { name: 'caret-lib', version: '0.2.0-rc.2' })
+
+    const report = analyzeProfile(dir)
+    expect(report.peerMismatches.find(m => m.name === 'floor-lib')?.satisfied).toBe(false)
+    expect(report.peerMismatches.find(m => m.name === 'caret-lib')?.satisfied).toBe(false)
+  })
+
   it('reports a peer dependency that is not installed at all (info-level, no summary warning)', () => {
     const dir = pdir()
     writeProfile(dir, { name: 'web-profile', dependencies: {} })
