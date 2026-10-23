@@ -14,7 +14,7 @@ vi.mock('node:dns/promises', () => ({ lookup: network.lookup }))
 vi.mock('node:https', () => ({ request: network.request }))
 
 import {
-  createProfileBackup, downloadWebdav, isPublicTarget, restoreProfileBackup, unportableDeps, uploadWebdav,
+  createProfileBackup, downloadWebdav, isPublicTarget, resolvePublicAddress, restoreProfileBackup, unportableDeps, uploadWebdav, WebdavUrlError,
 } from '../src/backup.ts'
 import { profileDir } from '../src/profile.ts'
 import { canCreateSymlink } from './symlink-support.ts'
@@ -192,13 +192,15 @@ describe('profile backup and restore', () => {
 
     for (const host of ['127.0.0.1', '169.254.169.254', '10.0.0.1', '172.17.0.1', '192.168.1.1', '[::1]', '[fc00::1]']) {
       expect(isPublicTarget(host), host).toBe(false)
-      await expect(uploadWebdav(`https://${host}/backup.json`, '', '', backup)).rejects.toThrow(/invalid WebDAV URL/)
+      // Every private target is still refused; since #999 the refusal says it
+      // is the ADDRESS that was refused, not that the URL is malformed.
+      await expect(uploadWebdav(`https://${host}/backup.json`, '', '', backup)).rejects.toThrow(/私有或保留地址/)
     }
     network.lookup.mockResolvedValueOnce([
       { address: '93.184.216.34', family: 4 },
       { address: '127.0.0.1', family: 4 },
     ])
-    await expect(uploadWebdav('https://rebinding.example/backup.json', '', '', backup)).rejects.toThrow(/invalid WebDAV URL/)
+    await expect(uploadWebdav('https://rebinding.example/backup.json', '', '', backup)).rejects.toThrow(/127\.0\.0\.1/)
     expect(network.request).not.toHaveBeenCalled()
   })
 
@@ -265,8 +267,14 @@ describe('WebDAV download redirects (#480)', () => {
     network.lookup.mockResolvedValueOnce([{ address: '93.184.216.34', family: 4 }])
     network.lookup.mockResolvedValueOnce([{ address: '169.254.169.254', family: 4 }])
     respondWith('', 302, { location: 'https://metadata.internal.example/latest' })
-    await expect(downloadWebdav('https://dav.example/backup.json', 'u', 'p'))
-      .rejects.toThrow(/invalid WebDAV URL/)
+    // #999: a private resolution is no longer reported as a malformed URL —
+    // the message names the address and the code says what kind of refusal it
+    // is, which is what the fake-ip report was about.
+    const refusal = await downloadWebdav('https://dav.example/backup.json', 'u', 'p').catch((error: unknown) => error)
+    expect(refusal).toBeInstanceOf(WebdavUrlError)
+    expect((refusal as WebdavUrlError).code).toBe('webdav_private_resolution')
+    expect((refusal as WebdavUrlError).address).toBe('169.254.169.254')
+    expect(String((refusal as Error).message)).toMatch(/169\.254\.169\.254/)
   })
 
   it('gives up after the hop limit instead of ping-ponging forever', async () => {
@@ -360,6 +368,43 @@ describe('private-network guard boundaries', () => {
 
   it('still allows the addresses immediately outside those ranges', () => {
     for (const [ip, why] of allowed) expect(isPublicTarget(ip), `${ip} (${why})`).toBe(true)
+  })
+})
+
+describe('a WebDAV refusal says what actually happened (#999)', () => {
+  // Most Chinese proxy setups answer every DNS query with a fake address
+  // (Clash/Mihomo fake-ip, 198.18.0.0/15). The gate is right to refuse that
+  // address; saying "invalid WebDAV URL" for it sent users to re-check a URL
+  // and a password that were correct.
+  it('names the address a fake-ip resolver returned, and the way out', async () => {
+    network.lookup.mockResolvedValueOnce([{ address: '198.18.1.12', family: 4 }])
+    const refusal = await resolvePublicAddress('dav.jianguoyun.com').catch((error: unknown) => error)
+    expect(refusal).toBeInstanceOf(WebdavUrlError)
+    const webdav = refusal as WebdavUrlError
+    expect(webdav.code).toBe('webdav_private_resolution')
+    expect(webdav.address).toBe('198.18.1.12')
+    expect(webdav.message).toContain('198.18.1.12')
+    expect(webdav.message).toMatch(/fake-ip/)
+    // Both languages, like every other refusal the UI shows verbatim.
+    expect(webdav.message).toMatch(/解析到私有或保留地址/)
+  })
+
+  it('separates an unresolvable host from a bad URL and from a private answer', async () => {
+    network.lookup.mockResolvedValueOnce([])
+    const empty = await resolvePublicAddress('nowhere.example').catch((error: unknown) => error)
+    expect((empty as WebdavUrlError).code).toBe('webdav_unresolvable')
+
+    const bad = await resolvePublicAddress('printer.local').catch((error: unknown) => error)
+    expect((bad as WebdavUrlError).code).toBe('webdav_bad_url')
+
+    const literal = await resolvePublicAddress('198.18.1.12').catch((error: unknown) => error)
+    expect((literal as WebdavUrlError).code).toBe('webdav_private_resolution')
+    expect((literal as WebdavUrlError).address).toBe('198.18.1.12')
+  })
+
+  it('still pins the public address it validated', async () => {
+    network.lookup.mockResolvedValueOnce([{ address: '93.184.216.34', family: 4 }])
+    expect(await resolvePublicAddress('dav.example')).toEqual({ address: '93.184.216.34', family: 4 })
   })
 })
 
