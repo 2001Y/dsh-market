@@ -53,14 +53,14 @@ it('keeps the bundled carrier when PATH selects a different CLI', async () => {
       { encoding: 'utf8', timeout: 5000 })
   expect(fallback.status).toBe(23)
   expect(fallback.stderr).toContain('different PATH CLI selected')
+  const inheritedCwd = realpathSync(process.cwd())
   for (const args of [['add', 'fixture@1.0.0'], ['add', '--force', 'fixture@2.0.0'], ['remove', 'fixture'], ['install']]) {
     const result = await runDshPlugin('web', args)
     expect(result).toMatchObject({ exitCode: 0, timedOut: false, cancelled: false, stderr: '' })
-    // realpathSync on the expectation: macOS's own /var -> /private/var means
-    // the child reports the resolved path while the fixture was built from the
-    // tmpdir spelling (same reason as check.spec.ts's symlink case).
+    // Compare canonical paths: macOS may spell /var as /private/var in a child.
+    // The bundled CLI inherits the parent's cwd, not the entry's directory.
     expect(JSON.parse(result.stdout)).toEqual({
-      args: ['plugin', '--profile', 'web', ...args, '--reporter=ndjson'], cwd: realpathSync(dirname(entry)),
+      args: ['plugin', '--profile', 'web', ...args, '--reporter=ndjson'], cwd: inheritedCwd,
     })
   }
 })
