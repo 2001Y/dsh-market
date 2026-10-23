@@ -7528,11 +7528,11 @@ describe('category row expansion', () => {
       const { container } = render(<MarketSection {...props()} />)
       await screen.findByText('dsh-loop')
       const chipCount = () => container.querySelectorAll('[data-chip="1"]').length
-      // 4/row × 2 rows → 8 fit → budget 7 → show 6 categories + 「全部」.
-      await waitFor(() => expect(chipCount()).toBe(7))
+      // 4/row × 1 row → 4 fit → 3 categories + 「全部」.
+      await waitFor(() => expect(chipCount()).toBe(4))
       act(() => resizeCats(900))
-      // 8/row × 2 rows fits every chip; collapsed shows the full set.
-      await waitFor(() => expect(chipCount()).toBe(11))
+      // 8/row × 1 row → 7 categories + 「全部」.
+      await waitFor(() => expect(chipCount()).toBe(8))
     } finally {
       if (offsetTopDesc) Object.defineProperty(HTMLElement.prototype, 'offsetTop', offsetTopDesc)
       else Reflect.deleteProperty(HTMLElement.prototype, 'offsetTop')
@@ -7711,11 +7711,10 @@ describe('category row expansion', () => {
       // Sentinel scrolled out of view above the scroll root: the header is now stuck.
       onChange!({ isIntersecting: false })
       await waitFor(() => expect(chipCount()).toBeLessThan(openCount))
-      // Squeezed to the one-row budget (2 categories, reserving a slot for
-      // the chevron), not the two-row budget (6) the plain collapsed state
-      // would use — proves the stuck path swapped budgets, not just re-ran
-      // the ordinary collapse.
-      expect(chipCount()).toBe(3) // "all" pill + 2 categories
+      // Squeezed to the one-row budget — the same row the collapsed state
+      // uses, chevron included in its own cell beside the wrap rather than
+      // taking a chip slot.
+      expect(chipCount()).toBe(4) // "all" pill + 3 categories
       // Auto-collapse is render-derived (`catsExpanded = stuckExpanded` while
       // pinned, starting false) — not a follow-up catsOpen flip. Chevron still
       // tracks catsExpanded, and clicking it while stuck must keep working

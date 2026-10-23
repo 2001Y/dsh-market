@@ -48,6 +48,10 @@ describe.skipIf(!dshAvailable()).sequential('web e2e: the market header in a nar
       const doc = (globalThis as any).document
       const market = doc.querySelector('[data-dsh-market-root]')
       const row = market.querySelector('[class$="_titleRow"]')
+      // Since the row-order change the actions are a sibling of the title row,
+      // both inside the header container; the header, not the title row, is the
+      // thing that has to stay inside the panel.
+      const header = market.querySelector('[class$="_headTop"]') ?? row
       // Present once #842's grouping landed; on the old markup the buttons were
       // direct children of the row, so both shapes are exercised.
       const group = market.querySelector('[class$="_titleActions"]')
@@ -65,7 +69,7 @@ describe.skipIf(!dshAvailable()).sequential('web e2e: the market header in a nar
       return {
         titleHeight: title.getBoundingClientRect().height,
         titleSqueezed: title.scrollWidth > title.clientWidth + 1,
-        rowOverflow: row.scrollWidth - row.clientWidth,
+        rowOverflow: (header as any).scrollWidth - (header as any).clientWidth,
         beyondPanel: buttons.filter((b: any) => b.right > panel.right + 1).length,
         squeezedButtons: buttons.filter((b: any) => b.width < 40).length,
       }

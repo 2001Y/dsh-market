@@ -132,7 +132,10 @@ describe.skipIf(!HAS_DSH)('web e2e: plugin market', () => {
     // The point of the feature is that a PHOTO of the screen carries the
     // version, so assert what is actually rendered and visible — a unit
     // test on the state would pass with the element hidden or unmounted.
-    const version = page.locator('[class*="titleRow"] [class*="version"]')
+    // In the header row, which since the row-order change means the right-hand
+    // cluster (name + sentence on the left, project + version + actions on the
+    // right) rather than a child of `titleRow`.
+    const version = page.locator('[class*="headTop"] [class*="version"]')
     await version.waitFor({ state: 'visible', timeout: 30_000 })
     expect((await version.textContent())?.trim()).toMatch(/^v\d+\.\d+\.\d+/)
   })
