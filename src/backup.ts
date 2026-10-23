@@ -260,8 +260,8 @@ async function webdavRequest(
   // loopback matters because other services on this machine may expose HTTP
   // APIs of their own.
   if (parsed.protocol === 'http:') throw new Error('WebDAV requires an https:// URL')
-  if (parsed.protocol !== 'https:') throw new Error('invalid WebDAV URL')
-  if (parsed.username !== '' || parsed.password !== '') throw new Error('invalid WebDAV URL')
+  if (parsed.protocol !== 'https:') throw new WebdavUrlError('webdav_bad_url', 'invalid WebDAV URL')
+  if (parsed.username !== '' || parsed.password !== '') throw new WebdavUrlError('webdav_bad_url', 'invalid WebDAV URL')
   const address = await resolvePublicAddress(parsed.hostname)
   const headers: Record<string, string> = { host: parsed.host }
   if (body !== undefined) {
@@ -410,16 +410,21 @@ export async function resolvePublicAddress(hostname: string): Promise<PublicAddr
   const bare = unbracketedHostname(hostname)
   const family = isIP(bare)
   if (family === 4 || family === 6) {
-    if (!isPublicTarget(bare)) throw new Error('invalid WebDAV URL')
+    if (!isPublicTarget(bare)) throw privateResolution(bare, bare)
     return { address: bare, family }
   }
-  if (!isPublicHostname(bare)) throw new Error('invalid WebDAV URL')
+  if (!isPublicHostname(bare)) throw new WebdavUrlError('webdav_bad_url', 'invalid WebDAV URL')
   const addresses = await lookup(bare, { all: true, verbatim: true })
-  if (addresses.length === 0 || addresses.some(({ address }) => !isPublicTarget(address))) {
-    throw new Error('invalid WebDAV URL')
+  if (addresses.length === 0) {
+    throw new WebdavUrlError('webdav_unresolvable',
+      `域名 ${bare} 没有解析出任何地址，市场无法连接。请检查域名拼写和本机 DNS。 / ${bare} did not resolve to any address, so the market could not connect. Check the hostname and the machine's DNS.`)
   }
+  const unsafe = addresses.find(({ address }) => !isPublicTarget(address))
+  if (unsafe !== undefined) throw privateResolution(bare, unsafe.address)
   const selected = addresses[0]
-  if (selected.family !== 4 && selected.family !== 6) throw new Error('invalid WebDAV URL')
+  if (selected.family !== 4 && selected.family !== 6) {
+    throw new WebdavUrlError('webdav_unresolvable', `域名 ${bare} 的解析结果不可用 / the addresses ${bare} resolved to are not usable`)
+  }
   return { address: selected.address, family: selected.family }
 }
 
@@ -429,6 +434,33 @@ export async function resolvePublicAddress(hostname: string): Promise<PublicAddr
  * indirection without letting two servers ping-pong forever.
  */
 const MAX_REDIRECTS = 5
+
+/**
+ * Why a WebDAV target was refused, when the answer is not "the URL is wrong"
+ * (#999).
+ *
+ * The gate used to answer `invalid WebDAV URL` for every branch — a non-https
+ * scheme, embedded credentials, a `.local` name, an empty DNS answer and a
+ * private resolution all read the same. That made one very common setup
+ * undebuggable: a proxy client in fake-ip mode (Clash/Mihomo, the default for
+ * most Chinese setups) answers `198.18.x.x` for every proxied hostname, so
+ * every WebDAV target was refused with a message pointing at the URL.
+ */
+export type WebdavUrlErrorCode = 'webdav_bad_url' | 'webdav_unresolvable' | 'webdav_private_resolution'
+
+export class WebdavUrlError extends Error {
+  constructor(readonly code: WebdavUrlErrorCode, message: string, readonly address?: string) {
+    super(message)
+    this.name = 'WebdavUrlError'
+  }
+}
+
+/** The refusal a private or reserved resolution deserves: what, why, and the way out. */
+function privateResolution(hostname: string, address: string): WebdavUrlError {
+  return new WebdavUrlError('webdav_private_resolution',
+    `WebDAV 域名 ${hostname} 解析到私有或保留地址 ${address}，市场不会连过去。如果你在用 fake-ip 模式的代理（Clash/Mihomo 默认如此，任何域名都答成 198.18.x.x），请把这个域名加入代理的 fake-ip-filter 列表，或改用它的真实地址，然后重试。 / The WebDAV host ${hostname} resolved to ${address}, a private or reserved address, so the market did not connect. If you use a proxy in fake-ip mode (Clash/Mihomo answers 198.18.x.x for every proxied name), add this host to its fake-ip-filter list or use its real address, then try again.`,
+    address)
+}
 
 export async function downloadWebdav(url: string, username: string, password: string): Promise<unknown> {
   // Some providers answer a WebDAV GET with 302 to a time-limited signed CDN

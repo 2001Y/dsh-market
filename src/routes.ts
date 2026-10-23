@@ -64,7 +64,7 @@ import {
   readUserPatchState, removeRowBlocks, rowIdsForPackage, userPatchPackageReferences,
 } from './patch.ts'
 import {
-  createProfileBackup, downloadWebdav, MAX_BACKUP_BYTES, mergeRestoreManifest, restoreProfileBackup, secretFileCount, unportableDeps, uploadWebdav,
+  createProfileBackup, downloadWebdav, MAX_BACKUP_BYTES, mergeRestoreManifest, restoreProfileBackup, secretFileCount, unportableDeps, uploadWebdav, WebdavUrlError,
   type ProfileBackup,
 } from './backup.ts'
 import {
@@ -2498,7 +2498,14 @@ export function mountMarketRoutes(
             sendJson(response, 200, { ok: true, backup: await downloadWebdav(url, username, password) })
           } else sendJson(response, 400, { error: 'invalid WebDAV action' })
         } catch (error) {
-          sendJson(response, 400, { error: error instanceof Error ? error.message : String(error) })
+          // #999: a refusal that is not "the URL is wrong" says so — the code
+          // and the address it resolved to ride along, so the UI (and any bug
+          // report quoting the response) can tell a bad URL from a fake-ip
+          // resolver answering 198.18.x.x for every host.
+          const webdav = error instanceof WebdavUrlError
+            ? { code: error.code, ...(error.address === undefined ? {} : { address: error.address }) }
+            : {}
+          sendJson(response, 400, { error: error instanceof Error ? error.message : String(error), ...webdav })
         }
       },
     }),
