@@ -1489,7 +1489,15 @@ export function analyzeProfile(profileDirectory: string, options: CheckOptions =
       // Peer checks cover EVERY declared peer, not just host core packages:
       // plugin-to-plugin peer mismatches break runtime registration just as
       // hard (issue #98 optimization round).
-      const satisfied = resolved !== null ? satisfiesRange(resolved, spec) : null
+      // #1000: the same prerelease admission the discovery and verify checks
+      // already use. A peer range written for the host line (`>=0.2.0-rc.0
+      // <0.3.0`) can only ever be satisfied by a prerelease host version, and
+      // npm's default rule refuses it unless a comparator pins the exact
+      // [major, minor, patch] tuple — so a healthy profile carried the same
+      // six permanent warnings, with no way to clear them but pinning exact
+      // rc versions. The flag widens admission only; `^`/`~` ceilings still
+      // apply (exclusiveUpperBound), so a cross-minor host line stays out.
+      const satisfied = resolved !== null ? satisfiesRange(resolved, spec, { includePrerelease: true }) : null
       const optional = pkg.peerDependenciesMeta?.[name]?.optional === true
       peerMismatches.push({
         plugin, name, range: spec, resolved,
