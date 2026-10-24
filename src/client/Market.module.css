@@ -931,6 +931,8 @@
    that spacer was splitting the row and ellipsizing the name early. */
 .memberName{display:flex;align-items:center;gap:6px;min-width:0;flex:1 1 auto}
 .memberName .nm{flex:0 1 auto;min-width:0}
+/* With a description beside it the name stops claiming the row, so the description does. */
+.memberNameWithDesc{flex:0 1 auto;max-width:42%}
 .memberKind{flex:0 0 auto;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#8b93a1);white-space:nowrap}
 .themeSlot{box-shadow:inset 0 -1px 0 var(--dsw-alias-border-l2,#e5e7eb);border-radius:8px 8px 0 0;margin-bottom:4px}
 .groupMember>.switch,.groupMember>button{flex-shrink:0}

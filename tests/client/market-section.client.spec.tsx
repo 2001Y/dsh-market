@@ -3095,6 +3095,42 @@ describe('P1-6 structured progress', () => {
   })
 })
 
+describe('an install with no structured phase (the desktop manager)', () => {
+  /** The status the desktop manager reports: one fixed line, no phase. */
+  function runningFor(seconds: number): void {
+    stubFetch({
+      '/dsh-market/status': {
+        active: true, seconds, lastLine: '桌面端的插件管理器正在处理 / The desktop app\'s plugin manager is working on it',
+        installed: {}, pnpm: true, boot: 'boot-1', restart: true,
+      },
+    })
+  }
+
+  it('shows its line in the page language, and only says a wait is normal once it is long (#1011)', async () => {
+    vi.useFakeTimers()
+    try {
+      sessionStorage.setItem('dshm-pending', JSON.stringify({ url: 'https://github.com/alice/dsh-loop' }))
+      runningFor(12)
+      render(<MarketSection {...props()} />)
+      await vi.waitFor(() => { screen.getByText('dsh-loop') })
+      await vi.advanceTimersByTimeAsync(2100)
+      await vi.waitFor(() => {
+        expect(screen.getByText(/The desktop app's plugin manager is working on it \(12s\)$/)).toBeTruthy()
+      })
+      // A short wait is normal and says nothing more.
+      expect(screen.queryByText(re(en.progressSlow))).toBeNull()
+
+      runningFor(412)
+      await vi.advanceTimersByTimeAsync(2100)
+      await vi.waitFor(() => {
+        expect(screen.getByText(re(en.progressSlow))).toBeTruthy()
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('P0-2 activation states in the Installed tab', () => {
   it('chips only the states the switch does not already show', async () => {
     stubFetch({
@@ -4183,6 +4219,32 @@ describe('#60 groups view', () => {
     const row = (await screen.findByText('dsh-shared')).closest('[class*="ungroupedRow"]') as HTMLElement
     expect(within(row).getByText(en.stateLibrary)).toBeTruthy()
     expect(within(row).queryByText(en.groupStateInert)).toBeNull()
+  })
+
+  it('keeps a plugin\'s description beside its name once it is in a group (#1006)', async () => {
+    // Moving a plugin into a group used to drop everything but its name; it
+    // came back only when the plugin was taken out again. The user's own note
+    // wins over the catalog text, as it does in "Ungrouped".
+    stubFetch({
+      '/dsh-market/installed': {
+        profile: 'web', installed: { 'dsh-unlisted': '^1.0.0', 'dsh-notify': '^1.0.0' },
+        live: ['dsh-unlisted', 'dsh-notify'], disabled: [], notes: { 'dsh-notify': 'my own reminder' },
+        groups: { work: ['dsh-unlisted', 'dsh-notify'] }, groupOrder: ['work'],
+        activation: {
+          'dsh-unlisted': { state: 'live', reasons: [], bundle: true, hot: true },
+          'dsh-notify': { state: 'live', reasons: [], bundle: true, hot: true },
+        },
+      },
+    })
+    render(<MarketSection {...props()} />)
+    fireEvent.click(screen.getByRole('button', { name: /Installed/ }))
+    fireEvent.click(screen.getByRole('button', { name: en.tabGroups }))
+
+    const noted = (await screen.findByText('dsh-notify')).closest('[class*="groupMember"]') as HTMLElement
+    expect(within(noted).getByText('my own reminder')).toBeTruthy()
+    // A member with nothing to say stays a bare row rather than growing an empty gap.
+    const bare = screen.getByText('dsh-unlisted').closest('[class*="groupMember"]') as HTMLElement
+    expect(bare.querySelector('[class*="ungroupedDesc"]')).toBeNull()
   })
 
   it('does not offer library switches in a group (#995)', async () => {

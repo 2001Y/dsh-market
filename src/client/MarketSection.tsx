@@ -76,6 +76,8 @@ function isHostDependencyFinding(value: unknown): value is SharedHostPackageDepe
 }
 
 const HOST_DEPENDENCY_PREVIEW_LIMIT = 5
+/** After this long without a structured phase, the install line adds a note that waiting is normal (#1011). */
+const SLOW_INSTALL_SECONDS = 90
 const IGNORED_UPDATES_SESSION_KEY = 'dshm-updates-ignored'
 const UNAVAILABLE_HOST_COMPATIBILITY: HostCompatibility = {
   status: 'unknown',
@@ -3318,7 +3320,12 @@ export function MarketSection(props: MarketSectionProps) {
                 setProgressPct(Math.max(4, Math.min(96, Math.round(status.downloaded / status.size * 100))))
               }
             } else {
-              setProgressLine((status.lastLine || '…') + '  (' + status.seconds + 's)')
+              // The desktop manager reports one fixed line and no phases, so
+              // a long wait would otherwise look like a hang. Say it is normal
+              // when a dependency downloads or compiles, and what to do if it
+              // is not.
+              const slow = (status.seconds ?? 0) >= SLOW_INSTALL_SECONDS ? ' · ' + t('progressSlow') : ''
+              setProgressLine(localizeBilingual(status.lastLine || '…', lang) + '  (' + status.seconds + 's)' + slow)
               setProgressPhase(null)
               setProgressCurrent(null)
               setProgressDone(0)
@@ -3417,7 +3424,7 @@ export function MarketSection(props: MarketSectionProps) {
         .catch(() => {})
     }, 2000)
     return () => clearInterval(timer)
-  }, [busyUrl, updatingName, data, installed, repoIdentities, repoHints, refreshInstalled])
+  }, [busyUrl, updatingName, data, installed, repoIdentities, repoHints, refreshInstalled, lang, t])
 
   const scrollToTop = () => {
     const el = bodyRef.current
@@ -5523,6 +5530,18 @@ export function MarketSection(props: MarketSectionProps) {
     )
   }
 
+  /**
+   * What the group view says about an installed plugin beyond its name: the
+   * user's own note, else the catalog's description (#1006). One place, so a
+   * plugin reads the same whether it sits in a group or in "Ungrouped".
+   */
+  const installedBlurb = (name: string) => {
+    const entry = data === null ? undefined : catalogEntryForInstalled(data.plugins, name, String(installed[name]), repoIdentities[name], repoHints[name])
+    const note = notes[name]
+    const authored = (entry?.description && (entry.description[lang] || entry.description.en)) || ''
+    return { entry, note, shown: note ?? authored }
+  }
+
   const renderInstalledBlockMenu = (name: string) => {
     // The host's page for this bundle, when it offers one. It is the only
     // place a bundle's ROWS can be switched one by one, which is the reason
@@ -7360,12 +7379,19 @@ export function MarketSection(props: MarketSectionProps) {
                                       {!collapsed && (
                                         <div className={css.groupMembers}>
                                           {members.length === 0 && <div className={css.groupHint}>{t('groupEmpty')}</div>}
-                                          {visibleMembers.map(member => (
+                                          {visibleMembers.map(member => {
+                                            const { note, shown } = installedBlurb(member)
+                                            return (
                                             <div className={installedThemeNames.has(member) && themeSlot ? `${css.groupMember} ${css.themeSlot}` : css.groupMember} key={member}>
-                                              <span className={css.memberName}>
+                                              <span className={shown !== '' ? `${css.memberName} ${css.memberNameWithDesc}` : css.memberName}>
                                                 <span className={css.nm}>{member}</span>
                                                 {installedThemeNames.has(member) && <span className={css.memberKind}>· {t('groupThemeBadge')}</span>}
                                               </span>
+                                              {shown !== '' && (
+                                                <Tooltip label={shown} side="top" maxWidth={320}>
+                                                  <span className={note !== undefined ? `${css.ungroupedDesc} ${css.noteMine}` : css.ungroupedDesc}>{shown}</span>
+                                                </Tooltip>
+                                              )}
                                               {activations[member]?.library === true && <span className={css.spec}>{t('stateLibrary')}</span>}
                                               {activations[member]?.library !== true && effectiveDisabledSet.has(member) && <span className={css.spec}>{t('disabledState')}</span>}
                                               {activations[member]?.library !== true && onOffSwitch({
@@ -7376,7 +7402,8 @@ export function MarketSection(props: MarketSectionProps) {
                                               })}
                                               <Button variant="ghost" size="sm" onClick={() => doRemoveMember(gid, member)}>{t('groupRemove')}</Button>
                                             </div>
-                                          ))}
+                                            )
+                                          })}
                                         </div>
                                       )}
                                     </div>
@@ -7398,13 +7425,10 @@ export function MarketSection(props: MarketSectionProps) {
                                 {(groupQuery === '' ? ungroupedNames : visibleUngrouped).length === 0
                                   ? <div className={css.empty}>{t('installedEmpty')}</div>
                                   : visibleUngrouped.map(name => {
-                                      const entry = data === null ? undefined : catalogEntryForInstalled(data.plugins, name, String(installed[name]), repoIdentities[name], repoHints[name])
+                                      const { entry, note, shown } = installedBlurb(name)
                                       const act = activations[name]
                                       const off = act?.library !== true && effectiveDisabledSet.has(name)
                                       const meta = !off && act !== undefined ? activationMeta(act.state, t, act.dependencyOf, act.loadedByProfile, act.library) : null
-                                      const note = notes[name]
-                                      const authored = (entry?.description && (entry.description[lang] || entry.description.en)) || ''
-                                      const shown = note ?? authored
                                       const stateLabel = act?.library === true
                                         ? meta?.label
                                         : off

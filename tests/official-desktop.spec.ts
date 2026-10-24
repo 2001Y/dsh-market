@@ -7,6 +7,8 @@ import type { HostPackageManager } from '../src/dsh-cli.ts'
 import { PendingUpdateJournal, pendingUpdatesFile } from '../src/pending-updates.ts'
 import { withHoistRecovery } from '../src/install.ts'
 import { routesFor, setActiveRegion } from '../src/regions.ts'
+import { progress } from '../src/dsh-cli.ts'
+import { localizeBilingual } from '../src/client/market-data.ts'
 
 const roots: string[] = []
 
@@ -94,6 +96,24 @@ describe('official Electron profile runtime', () => {
     await expect(runtime.runPlugin('desktop', ['add', 'example@2.0.0'])).resolves.toMatchObject({ exitCode: 0, stdout: 'installed' })
     expect(service.installBundle).toHaveBeenCalledWith('example@2.0.0', { requestId: expect.any(String) })
     await runtime.dispose()
+  })
+
+  it('says what it is doing in both languages while the manager works (#1011)', async () => {
+    // The manager reports no phases, so this line is all the page shows for as
+    // long as the install runs. It used to be English only, one fixed sentence.
+    const service = manager()
+    let settle: (value: { application: string; packageResult: { exitCode: number; output: string } }) => void = () => {}
+    service.installBundle.mockImplementationOnce(() => new Promise(resolve => { settle = resolve as typeof settle }))
+    const runtime = createOfficialDesktopRuntime(() => service, 'desktop', profile())
+    const running = runtime.runPlugin('desktop', ['add', 'example@2.0.0'])
+    try {
+      expect(localizeBilingual(progress.lastLine, 'zh')).toBe('桌面端的插件管理器正在处理')
+      expect(localizeBilingual(progress.lastLine, 'en')).toBe('The desktop app\'s plugin manager is working on it')
+    } finally {
+      settle({ application: 'restart-required', packageResult: { exitCode: 0, output: 'installed' } })
+      await running
+      await runtime.dispose()
+    }
   })
 
   it('uses the current market mirror for installs, update targets and exact rollback targets (#862)', async () => {
