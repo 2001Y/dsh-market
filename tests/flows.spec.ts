@@ -627,6 +627,8 @@ const hot = vi.hoisted(() => ({
   /** The live source the routes installed, so a test can read what a spawn would. */
   buildEnvSource: undefined as (() => Readonly<Record<string, string>>) | undefined,
   failNext: false,
+  /** The next hotMount refuses as "restart-only" (nothing was attempted). */
+  deferNext: false,
 }))
 vi.mock('../src/hot.ts', async (importOriginal) => ({
   // The REAL module underneath, with only the harness's own overrides on top.
@@ -687,6 +689,10 @@ vi.mock('../src/hot.ts', async (importOriginal) => ({
       hot.failNext = false
       return Promise.resolve({ ok: false, reason: 'test: host cannot hot-mount' })
     }
+    if (hot.deferNext) {
+      hot.deferNext = false
+      return Promise.resolve({ ok: false, deferred: true, reason: 'test: patch is restart-only' })
+    }
     hot.mounts.push(name)
     return Promise.resolve({ ok: true, reason: null })
   },
@@ -745,6 +751,7 @@ const REGISTRY = {
     { name: 'dsh-blue-whale', owner: 'o', url: 'https://github.com/o/blue-whale', category: 'tool', npm: null, description: {}, install: '', added: '' },
     { name: 'dsh-patchy', owner: 'o', url: 'https://github.com/o/dsh-patchy', category: 'tool', npm: null, description: {}, install: '', added: '' },
     { name: 'dsh-crashy', owner: 'o', url: 'https://github.com/o/dsh-crashy', category: 'tool', npm: null, description: {}, install: '', added: '' },
+    { name: 'dsh-swap', owner: 'o', url: 'https://github.com/o/dsh-swap', category: 'tool', npm: null, description: {}, install: '', added: '' },
     { name: 'dsh-tweaker', owner: 'o', url: 'https://github.com/o/dsh-tweaker', category: 'tool', npm: null, description: {}, install: '', added: '' },
     // Carries a prebuilt Release archive (#250): its install target is a
     // URL, not an npm name and not a github: shortcut.
@@ -7631,6 +7638,103 @@ describe('generic enable/disable toggle (#60)', () => {
     expect(readFileSync(userPatch, 'utf8')).not.toContain('disabled: false')
     // …and the plugin is still the market's to describe as off (#575).
     expect(on.json.activation['dsh-patchy'].state).toBe('disabled')
+  })
+
+  /**
+   * A bundle that swaps something out: it disables stock rows it does not own
+   * and inserts rows of its own to stand in for them (#1010's CLI Worker).
+   */
+  async function installSwap(): Promise<{ userPatch: string; entry: Testbed['loaderEntries'][number] }> {
+    fake.repos['github:o/dsh-swap'] = {
+      name: 'dsh-swap',
+      manifest: { dsh: { bundle: { patch: './cordis.patch.yml' } }, main: 'lib/index.js' },
+      artifacts: ['lib/index.js', 'cordis.patch.yml'],
+    }
+    await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-swap' })
+    hot.mounts = []
+    writeFileSync(join(profileDir('web'), 'node_modules', 'dsh-swap', 'cordis.patch.yml'), [
+      '- id: ui-chat',
+      '  disabled: true',
+      '- insert:',
+      '    - id: swap-chat',
+      "      name: 'dsh-swap'",
+      '',
+    ].join('\n'))
+    const entry: Testbed['loaderEntries'][number] = {
+      options: { id: 'swap-chat', name: 'dsh-swap', disabled: null as boolean | null } as never,
+      fiber: {},
+      update: vi.fn(async (options: { disabled: boolean | null }) => {
+        entry.options.disabled = options.disabled
+        entry.fiber = options.disabled === true ? undefined : {}
+      }),
+    }
+    bed.loaderEntries.push(entry)
+    return { userPatch: join(profileDir('web'), 'cordis.patch.yml'), entry }
+  }
+
+  it('does not stop a swapping bundle\'s rows while the rows it replaced are still off (#1010)', async () => {
+    // The CLI Worker plugin disables the stock `ui-*` rows and brings its own.
+    // Stopping its rows first, one by one, leaves a window with NEITHER set of
+    // UI mounted: the page throws and stays blank even after the stock rows
+    // come back. The swap has to happen in one composition, so the live drive
+    // is left alone and the switch lands on the next start.
+    const { entry } = await installSwap()
+    const manifestPath = join(profileDir('web'), 'package.json')
+
+    const off = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-swap', enabled: false })
+
+    expect(off.status).toBe(200)
+    expect(off.json.restart).toBe(true)
+    expect(entry.update).not.toHaveBeenCalled()
+    // The durable layers still say off, so the next start swaps back.
+    expect(hot.disabled.has('dsh-swap')).toBe(true)
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).dsh?.profile?.bundles ?? []).not.toContain('dsh-swap')
+    expect(readFileSync(join(profileDir('web'), 'cordis.patch.yml'), 'utf8')).toContain('- id: swap-chat\n  disabled: true\n')
+  })
+
+  it('writes every layer when a swapping bundle comes back on, and says it needs a restart (#1010)', async () => {
+    // After an off, the bundle's rows are not in the loader at all, and its
+    // patch is not plain inserts, so the host cannot mount it live. That is
+    // "applies on the next start", not a failure: refusing it left the stack
+    // entry added and the rows still disabled — the stock UI off by the
+    // bundle's own disables and its replacement off by the user patch, which
+    // a restart does not repair.
+    const { userPatch } = await installSwap()
+    const manifestPath = join(profileDir('web'), 'package.json')
+    const off = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-swap', enabled: false })
+    expect(off.status).toBe(200)
+    bed.loaderEntries.length = 0
+
+    hot.deferNext = true
+    const on = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-swap', enabled: true })
+
+    expect(on.status).toBe(200)
+    expect(on.json.ok).toBe(true)
+    expect(on.json.restart).toBe(true)
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).dsh.profile.bundles).toContain('dsh-swap')
+    expect(readFileSync(userPatch, 'utf8')).not.toContain('swap-chat')
+    expect(on.json.disabled).not.toContain('dsh-swap')
+  })
+
+  it('leaves the stack entry out when an enable fails to mount (#1010, #575)', async () => {
+    // A mount that was tried and crashed persists nothing (#575). The stack
+    // entry is part of that: re-adding it while the rows stay disabled is the
+    // half-switched state the failed enable is meant to prevent.
+    const { userPatch } = await installPatchy()
+    const manifestPath = join(profileDir('web'), 'package.json')
+    const bundlesNow = (): string[] => JSON.parse(readFileSync(manifestPath, 'utf8')).dsh?.profile?.bundles ?? []
+    const off = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-patchy', enabled: false })
+    expect(off.status).toBe(200)
+    expect(bundlesNow()).not.toContain('dsh-patchy')
+    const patchBefore = readFileSync(userPatch, 'utf8')
+    bed.loaderEntries.length = 0
+
+    hot.failNext = true
+    const on = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-patchy', enabled: true })
+
+    expect(on.status).toBe(502)
+    expect(bundlesNow()).not.toContain('dsh-patchy')
+    expect(readFileSync(userPatch, 'utf8')).toBe(patchBefore)
   })
 
   it('leaves a bundle that only CONFIGURES a neighbour in the stack (#147, fixture-cross)', async () => {

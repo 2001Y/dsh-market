@@ -906,7 +906,13 @@ export function mountMarketRoutes(
           reason = `${name} 新版要求宿主 ${gate.range},当前运行 ${gate.runtimeVersion},开了也不会生效;${remedy.zh} / ${name} needs host ${gate.range} but this host runs ${gate.runtimeVersion} — enabling it now would not take effect; ${remedy.en}`
         } else {
           const result = await hotMount(host, dir, name)
-          ok = result.ok
+          // A package that can only come up on a start (config rows, a
+          // carrier's disables) was never tried, so there is no crash to
+          // refuse to persist (#575). Failing the enable here left the
+          // durable layers half-written: the stack entry re-added, the rows
+          // it owns still disabled, and both the stock UI and the plugin's
+          // replacement off at the next boot (#1010).
+          ok = result.ok || result.deferred === true
           reason = result.reason ?? undefined
           // Deliberately NOT clearing replacedWhileLive here (#685). This used
           // to say "a mount that succeeded imported the module as it is on
@@ -919,6 +925,13 @@ export function mountMarketRoutes(
           // restart ends the process that holds it, and the flag with it.
         }
       }
+    } else if (carrierRowIds(dir, name).length > 0) {
+      // A carrier replaces something: its patch disables stock rows and its
+      // own rows stand in for them. Stopping its rows here, while the stock
+      // ones are still disabled, leaves a window with neither — the page
+      // throws and does not come back (#1010). The swap needs one
+      // composition, which only the layers below and a restart provide.
+      ok = true
     } else {
       ok = await hotUnmount(name) || await themes.setEntryDisabled(name, true)
       if (!ok) {
@@ -1019,7 +1032,11 @@ export function mountMarketRoutes(
     const reBundle = enabled && !isCarrier && !readProfileBundles(activeProfileDir).includes(name)
     let stackChanged = false
     let bundleSwitch: { ok: boolean; reason: string | null } = { ok: true, reason: null }
-    if (stackToggle) {
+    // A failed enable leaves the stack as it was, like the row layer below
+    // (#575). The entry used to go back in regardless, while the rows stayed
+    // disabled: a carrier then switched the stock rows off at the next boot
+    // and its own rows were still off, which no restart repairs (#1010).
+    if (stackToggle && (liveOk || !enabled)) {
       try {
         stackChanged = enabled
           ? addProfileBundle(activeProfileDir, name)

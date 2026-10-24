@@ -735,6 +735,13 @@ export interface HotMountResult {
   ok: boolean
   /** Bilingual reason shown to the user instead of a bare restart banner. */
   reason: string | null
+  /**
+   * Set when nothing was attempted because this package can only come up on a
+   * start — its patch holds more than plain inserts. That is a verdict about
+   * the package, not a mount that crashed: the durable switch can still be
+   * written, where a crash must not be persisted (#575, #1010).
+   */
+  deferred?: true
 }
 
 /**
@@ -840,6 +847,7 @@ export async function hotMount(ctx: HotContext, profileDir: string, packageName:
       if (rows === null) {
         return {
           ok: false,
+          deferred: true,
           reason: 'bundle patch 含配置行/表达式,热挂载仅支持纯 insert,重启后生效 / the bundle patch contains config/expression rows; hot-mount only supports plain inserts — it activates on restart',
         }
       }

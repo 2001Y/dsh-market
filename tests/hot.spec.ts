@@ -177,6 +177,44 @@ describe('hotMount reads every declared patch file (#792)', () => {
   })
 })
 
+/**
+ * #1010: a refusal that only says "this comes up on a start" must be told
+ * apart from a mount that was tried and failed — the toggle route persists the
+ * first and refuses to persist the second (#575).
+ */
+describe('hotMount: restart-only versus failed', () => {
+  function bundle(dir: string, name: string, patch: string | null): void {
+    const pkg = join(dir, 'node_modules', name)
+    mkdirSync(pkg, { recursive: true })
+    writeFileSync(join(pkg, 'package.json'), JSON.stringify({ name, dsh: { bundle: { patch: './cordis.patch.yml' } } }))
+    if (patch !== null) writeFileSync(join(pkg, 'cordis.patch.yml'), patch)
+  }
+
+  it('marks a patch with disables or config as deferred, not as a crash', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dshm-hot-'))
+    try {
+      bundle(dir, 'swapper', '- id: ui-chat\n  disabled: true\n- insert:\n    - id: swap-chat\n      name: swapper\n')
+      const result = await hotMount(ctx, dir, 'swapper')
+      expect(result.ok).toBe(false)
+      expect(result.deferred).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not mark an unreadable declaration as deferred — no restart can load it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dshm-hot-'))
+    try {
+      bundle(dir, 'broken', null)
+      const result = await hotMount(ctx, dir, 'broken')
+      expect(result.ok).toBe(false)
+      expect(result.deferred).toBeUndefined()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('mountClientOnlyDeps vs the user patch layer (#58)', () => {
   it('skips packages cordis.patch.yml already manages; still shims unmanaged ones', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dshm-hot-'))
