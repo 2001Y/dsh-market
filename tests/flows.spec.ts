@@ -7716,6 +7716,29 @@ describe('generic enable/disable toggle (#60)', () => {
     expect(on.json.disabled).not.toContain('dsh-swap')
   })
 
+  it('repairs a profile an older build left half-switched when the plugin is turned on again (#1010)', async () => {
+    // The state the report ended in: the stack entry is back, the rows the
+    // bundle owns are still disabled in the user patch. Turning the plugin on
+    // once more has to clear those rows, not read the stack entry as "done".
+    const { userPatch } = await installSwap()
+    const off = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-swap', enabled: false })
+    expect(off.status).toBe(200)
+    const manifestPath = join(profileDir('web'), 'package.json')
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    manifest.dsh = { ...(manifest.dsh ?? {}), profile: { ...(manifest.dsh?.profile ?? {}), bundles: ['dsh-swap'] } }
+    writeFileSync(manifestPath, JSON.stringify(manifest))
+    expect(readFileSync(userPatch, 'utf8')).toContain('- id: swap-chat\n  disabled: true\n')
+    bed.loaderEntries.length = 0
+
+    hot.deferNext = true
+    const on = await bed.dispatch('POST', '/dsh-market/toggle', { name: 'dsh-swap', enabled: true })
+
+    expect(on.status).toBe(200)
+    expect(on.json.restart).toBe(true)
+    expect(readFileSync(userPatch, 'utf8')).not.toContain('swap-chat')
+    expect(JSON.parse(readFileSync(manifestPath, 'utf8')).dsh.profile.bundles).toContain('dsh-swap')
+  })
+
   it('leaves the stack entry out when an enable fails to mount (#1010, #575)', async () => {
     // A mount that was tried and crashed persists nothing (#575). The stack
     // entry is part of that: re-adding it while the rows stay disabled is the
