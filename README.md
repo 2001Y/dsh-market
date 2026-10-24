@@ -37,7 +37,7 @@ may report success but installs the market into `profiles/web`, **not** the
 profile used by the Desktop app. It will not appear in Desktop. Install through
 the app's **Settings → Plugins** instead; Desktop's profile is managed by the app.
 
-In `dsh web`, open the **Plugins** page and pick the **Plugin Market**
+Once it is installed, open the **Plugins** page and pick the **Plugin Market**
 tab next to **Installed** (dsh 0.2.1 and newer — plain `dsh web` included, no
 desktop app needed). The market is also still a section of **Settings → Plugin
 Market**: on dsh 0.2.0 and older that is the only way in, and from 0.2.1 the
