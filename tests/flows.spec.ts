@@ -732,6 +732,9 @@ const REGISTRY = {
   plugins: [
     { name: 'dsh-loop', owner: 'o', url: 'https://github.com/o/dsh-loop', category: 'tool', npm: 'dsh-loop', description: {}, install: '', added: '' },
     { name: 'dsh-genui', owner: 'omdsh-dev', url: 'https://github.com/omdsh-dev/dsh-genui', category: 'tool', npm: '@changfenhuang/dsh-genui', description: {}, install: '', added: '' },
+    // #1012 P1 shape: a package renamed on npm, declared by the catalog so the
+    // market can offer the move before any update fails.
+    { name: 'dsh-renamed', owner: 'o', url: 'https://github.com/o/dsh-renamed', category: 'tool', npm: 'dsh-renamed-new', previousNpm: ['dsh-renamed-old'], description: {}, install: '', added: '' },
     // The market's own entry: the release-channel specs need it installed,
     // because the channel applies to this package and no other.
     { name: 'dshmarket', owner: 'o', url: 'https://github.com/o/dshmarket', category: 'tool', npm: 'dshmarket', description: {}, install: '', added: '' },
@@ -8841,7 +8844,150 @@ describe('the dev channel is an ordinary choice', () => {
               expect(migrated.status).toBe(400)
               expect(installedSpec('dsh-genui')).toBe('github:omdsh-dev/dsh-genui#publish')
             })
+
           })
+describe('catalog previousNpm (#1012)', () => {
+  /**
+   * Installs the OLD package name on disk, with the loader rows that package
+   * inserts — the same ones the successor's tarball declares.
+   */
+  const installPredecessor = (options: { spec?: string; patchIds?: string[] } = {}) => {
+    const dir = profileDir('web')
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({
+      dependencies: { 'dsh-renamed-old': options.spec ?? '^0.9.6' },
+    }))
+    mkdirSync(join(dir, 'node_modules', 'dsh-renamed-old'), { recursive: true })
+    writeFileSync(join(dir, 'node_modules', 'dsh-renamed-old', 'package.json'), JSON.stringify({
+      name: 'dsh-renamed-old', version: '0.9.6', main: 'index.js',
+    }))
+    writeFileSync(join(dir, 'node_modules', 'dsh-renamed-old', 'index.js'), '')
+    const ids = options.patchIds ?? ['dsh-renamed-row']
+    if (ids.length > 0) {
+      writeFileSync(
+        join(dir, 'node_modules', 'dsh-renamed-old', 'cordis.patch.yml'),
+        ids.map(id => `- insert:\n    - id: ${id}\n      name: dsh-renamed-old\n`).join(''),
+      )
+    }
+  }
+  const successorOnNpm = () => {
+    fake.npm['dsh-renamed-new'] = {
+      latest: '1.0.0',
+      versions: {
+        '1.0.0': {
+          manifest: { name: 'dsh-renamed-new', dsh: {}, main: 'index.js' },
+          artifacts: ['index.js'],
+        },
+      },
+    }
+  }
+
+  it('offers and performs the catalog rename before any update has failed', async () => {
+    installPredecessor()
+    successorOnNpm()
+    hot.disabled.add('dsh-renamed-old')
+    hot.groups.work = ['dsh-renamed-old']
+    hot.groupOrder.push('work')
+    hot.notes['dsh-renamed-old'] = 'renamed package'
+
+    // No update ran. The catalog alone says this name moved, so the row can
+    // offer the move instead of the user dead-ending on npm.
+    const updates = await bed.dispatch('GET', '/dsh-market/updates?force=1')
+    expect(updates.status).toBe(200)
+    expect(updates.json.updates['dsh-renamed-old'].sourceMigration).toEqual({
+      kind: 'npm-rename',
+      from: 'dsh-renamed-old',
+      target: 'dsh-renamed-new',
+    })
+
+    const migrated = await bed.dispatch('POST', '/dsh-market/migrate-source', {
+      name: 'dsh-renamed-old',
+      kind: 'npm-rename',
+      to: 'dsh-renamed-new',
+    })
+    expect(migrated.status, JSON.stringify(migrated.json)).toBe(200)
+    expect(migrated.json).toMatchObject({
+      ok: true,
+      kind: 'npm-rename',
+      from: { name: 'dsh-renamed-old', source: '^0.9.6' },
+      to: { name: 'dsh-renamed-new', source: 'npm' },
+    })
+    expect(installedSpec('dsh-renamed-old')).toBeUndefined()
+    expect(installedSpec('dsh-renamed-new')).toBe('^1.0.0')
+    expect(hot.disabled.has('dsh-renamed-new')).toBe(true)
+    expect(hot.disabled.has('dsh-renamed-old')).toBe(false)
+    expect(hot.groups.work).toEqual(['dsh-renamed-new'])
+    expect(hot.notes['dsh-renamed-new']).toBe('renamed package')
+  })
+
+  it('refuses a rename the catalog does not declare', async () => {
+    installPredecessor()
+    successorOnNpm()
+
+    // dsh-genui's entry declares no former name, so naming its package is a
+    // body a user could type but not a move the catalog authorized.
+    const refused = await bed.dispatch('POST', '/dsh-market/migrate-source', {
+      name: 'dsh-renamed-old',
+      kind: 'npm-rename',
+      to: '@changfenhuang/dsh-genui',
+    })
+    expect(refused.status).toBe(400)
+    expect(installedSpec('dsh-renamed-old')).toBe('^0.9.6')
+  })
+
+  it('refuses the stacked install and hands the client the move', async () => {
+    installPredecessor()
+    successorOnNpm()
+
+    // Two copies re-register the same row; the trial boot refuses them and the
+    // profile would fail its next start. Refusing before pnpm runs is the only
+    // outcome that keeps that start working — and the payload is what lets the
+    // row offer the move instead of a dead end.
+    const refused = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-renamed' })
+    expect(refused.status).toBe(409)
+    expect(String(refused.json.error)).toContain('dsh-renamed-old')
+    expect(String(refused.json.error)).toContain('改用迁移')
+    expect(refused.json.migration).toEqual({
+      kind: 'npm-rename',
+      from: 'dsh-renamed-old',
+      target: 'dsh-renamed-new',
+    })
+    expect(installedSpec('dsh-renamed-new')).toBeUndefined()
+  })
+
+  it('refuses without offering a move the transaction cannot perform', async () => {
+    installPredecessor({ spec: 'github:o/dsh-renamed-old#main' })
+    successorOnNpm()
+
+    // A Git install cannot be replaced by this transaction, so the same clash
+    // stays a plain refusal: no payload, no button that would answer 400.
+    const refused = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-renamed' })
+    expect(refused.status).toBe(409)
+    expect(refused.json.migration).toBeUndefined()
+    expect(String(refused.json.error)).not.toContain('改用迁移')
+    expect(installedSpec('dsh-renamed-old')).toBe('github:o/dsh-renamed-old#main')
+  })
+
+  it('stays quiet when the successor is already installed alongside', async () => {
+    installPredecessor()
+    successorOnNpm()
+    const dir = profileDir('web')
+    const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+    manifest.dependencies['dsh-renamed-new'] = 'npm:dsh-renamed-new@^1.0.0'
+    writeFileSync(join(dir, 'package.json'), JSON.stringify(manifest))
+
+    const updates = await bed.dispatch('GET', '/dsh-market/updates?force=1')
+    expect(updates.status).toBe(200)
+    expect(updates.json.updates['dsh-renamed-old'].sourceMigration).toBeUndefined()
+  })
+
+  it('installs the successor normally when the predecessor is not installed', async () => {
+    successorOnNpm()
+    const installed = await bed.dispatch('POST', '/dsh-market/install', { url: 'https://github.com/o/dsh-renamed' })
+    expect(installed.status, JSON.stringify(installed.json)).toBe(200)
+    expect(installedSpec('dsh-renamed-new')).toBe('^1.0.0')
+  })
+})
+
 describe('favorites (#414)', () => {
   it('adds and removes a catalog url and returns it from GET /installed', async () => {
     const url = 'https://github.com/o/dsh-loop'
@@ -9137,3 +9283,4 @@ describe('a pinned install is judged on its own release, not on latest (#581)', 
     expect(fake.calls.filter(call => call[0] === 'add')).toEqual([])
   })
 })
+

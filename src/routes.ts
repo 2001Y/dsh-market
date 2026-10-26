@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { load as loadYaml } from 'js-yaml'
+import { packageFileFromRegistry } from './catalog-npm.ts'
 import { forgetCatalog, loadRegistry, pluginCategories } from './registry.ts'
 import { settingsNamespaceState } from './settings.ts'
 import {
@@ -32,7 +33,7 @@ import {
 } from './dsh-cli.ts'
 import { packageOfEntryName } from './entry-identity.ts'
 import { PendingRowJournal, repairOrphanedRows } from './pending-rows.ts'
-import { addProfileBundle, bundleOptOutRowIds, bundlePatchInsertedIds, bundlesDroppedFromProfile, declareProfileDependency, dropFromManifest, generationManagedNames, hasLoadableEntry, holdsNativeAddon, INBOX_BUNDLES, isDshProfileName, profileDir, readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledPackageName, readInstalledRepoEvidence, readInstalledVersion, readLockCommits, readProfileBundles, readProfileManifestSnapshot, removeProfileBundle, restoreProfileManifest, setAllowBuilds, type ProfileManifestSnapshot } from './profile.ts'
+import { addProfileBundle, bundleOptOutRowIds, bundlePatchInsertedIds, bundlesDroppedFromProfile, declareProfileDependency, dropFromManifest, generationManagedNames, hasLoadableEntry, holdsNativeAddon, INBOX_BUNDLES, isDshProfileName, profileDir, readDependencyOwners, readGitResolutionCommit, readInstalled, readInstalledManifest, readInstalledPackageName, readInstalledRepoEvidence, readInstalledVersion, readLockCommits, readProfileBundles, readProfileManifestSnapshot, removeProfileBundle, parsePatchRows, restoreProfileManifest, setAllowBuilds, type ProfileManifestSnapshot } from './profile.ts'
 import { assessProfile, classifyPeer, introducedDuplicateNames, introducedRisks, type CompatibilityRisk } from './compatibility.ts'
 import { runningAgentIds, type AgentsLookup } from './agents.ts'
 import { analyzeProfile, corePackageNames, type DuplicateName } from './check.ts'
@@ -71,7 +72,7 @@ import {
   createGist, fitsGistLimit, GistError, gistErrorCode, parseGistId, readGist, resolveGistTokenSource, updateGist, verifyGistToken,
 } from './gist.ts'
 import { MAX_UPDATE_OPERATIONS_V1, UpdateOperationStoreV1, UPDATE_API_V1_SCHEMA } from './update-api-v1.ts'
-import { findGitToNpmMigration } from './source-migration.ts'
+import { declaredPredecessors, findCatalogRename, findGitToNpmMigration, findNpmTargetEntry, isRegistryRangeSpec, sameLoaderRows, type GitToNpmMigration, type NpmRenameMigration } from './source-migration.ts'
 
 export type { LoaderEntry } from './themes.ts'
 export type { UpdateStatus } from './updates.ts'
@@ -1287,6 +1288,44 @@ export function mountMarketRoutes(
   /** Why a rematerialization could not even be attempted here (see above). */
   function cannotRematerializeDetail(name: string, pinned: string | undefined): string {
     return `这台宿主只接受按精确版本重新安装，「${name}」改动前在 profile 里写作 ${pinned ?? '（不在 profile 里）'}，市场无法在它上面重建上一版 / this host can only reinstall an exact version, and "${name}" was declared as ${pinned ?? '(not in the profile)'}, so the previous build cannot be rematerialized there`
+  }
+
+  /**
+   * The installed package this entry replaces under a former name (#1012).
+   *
+   * Identity, not naming. Two packages are one plugin when they insert the
+   * same loader rows, and both sides state theirs: the installed copy in the
+   * patch files it ships, the published copy in its tarball. Comparing those
+   * costs no install and cannot be fooled by a package that merely shares a
+   * name — which is exactly what a rename breaks.
+   *
+   * The catalog's `previousNpm` narrows the candidates and supplies the only
+   * statement of intent; the rows confirm it. A row read that fails proves
+   * nothing, so the catalog's claim stands; rows that ARE readable and
+   * disjoint say these are two plugins after all, and the install proceeds.
+   */
+  async function renamePredecessor(
+    entry: { name: string; npm?: unknown; previousNpm?: unknown },
+    installed: Record<string, string>,
+    registryBase: string,
+  ): Promise<string | null> {
+    const candidates = declaredPredecessors(entry, installed)
+    if (candidates.length === 0) return null
+    if (typeof entry.npm !== 'string' || !NPM_NAME_RE.test(entry.npm)) return null
+    if (candidates.length > 1) {
+      logEvent('warn', 'install', `${entry.name}: ${candidates.join(', ')} all answer to a former name — not replacing any of them`)
+      return null
+    }
+    const current = candidates[0]!
+    const installedIds = bundlePatchInsertedIds(join(activeProfileDir, 'node_modules', current))
+    if (installedIds.length === 0) return current
+    const bytes = await packageFileFromRegistry(registryBase, entry.npm, 'package/cordis.patch.yml')
+    if (bytes === null) return current
+    const incomingIds = parsePatchRows(bytes.toString('utf8')).insertedIds
+    if (incomingIds.length === 0) return current
+    if (sameLoaderRows(installedIds, incomingIds)) return current
+    logEvent('info', 'install', `${entry.name}: ${current} declares no row this release inserts — installing beside it`)
+    return null
   }
 
   /**
@@ -3944,13 +3983,25 @@ export function mountMarketRoutes(
           // Migration hints are this listing's own business: the market page
           // is where "this could come from npm now" is offered, and no other
           // caller acts on it.
-          const sourceMigrationFor = new Map<string, { kind: 'git-to-npm'; repo: string; target: string }>()
+          const sourceMigrationFor = new Map<string, GitToNpmMigration | NpmRenameMigration>()
           try {
             const registry = await loadRegistry()
             const installed = readInstalled(config.profile, activeProfileDir)
             for (const [name, spec] of Object.entries(installed)) {
               const migration = findGitToNpmMigration(registry.plugins, spec)
               if (migration !== null) sourceMigrationFor.set(name, migration)
+            }
+            // A rename declared by the catalog (#1012, P1). This is the only
+            // path that reaches a user whose old range no longer resolves:
+            // their update fails before installing anything, so no offer was
+            // ever recorded. The catalog states the rename up front, and the
+            // row still has to be a plain registry range the transaction can
+            // replace — and the successor must not already be installed.
+            for (const [name, spec] of Object.entries(installed)) {
+              if (sourceMigrationFor.has(name) || !isRegistryRangeSpec(spec)) continue
+              const rename = findCatalogRename(registry.plugins, name)
+              if (rename === null || installed[rename.target] !== undefined) continue
+              sourceMigrationFor.set(name, { kind: 'npm-rename', from: name, target: rename.target })
             }
           } catch (error) {
             logEvent('warn', 'updates', `package source lookup failed — ${error instanceof Error ? error.message : String(error)}`)
@@ -4011,7 +4062,7 @@ sendJson(response, 200, { updates })
         }
         try {
           await withMutationLock(response, 'install', async () => {
-            const body = (await readJsonBody(request)) as { name?: unknown; confirmAgentsRunning?: unknown }
+            const body = (await readJsonBody(request)) as { name?: unknown; kind?: unknown; to?: unknown; confirmAgentsRunning?: unknown }
             const name = typeof body.name === 'string' ? body.name : ''
             if (!NPM_NAME_RE.test(name) || INBOX_BUNDLES.has(name)) {
               sendJson(response, 400, { error: 'plugin is not installed' })
@@ -4031,21 +4082,85 @@ sendJson(response, 200, { updates })
               return
             }
 
-            let migration: ReturnType<typeof findGitToNpmMigration> = null
-            try {
-              const registry = await loadRegistry()
-              migration = findGitToNpmMigration(registry.plugins, spec)
-            } catch (error) {
-              logEvent('warn', 'source-migration', `${name}: catalog lookup failed — ${error instanceof Error ? error.message : String(error)}`)
-            }
-            if (migration === null) {
+            // Two ways in, one transaction out (#1012). The discovered
+            // Git -> npm case needs no request body. An npm -> npm rename
+            // cannot be discovered (the old spec names only the old package,
+            // and the registry answers 404 for it), so the client carries the
+            // target from the update failure's own artifact — and it is
+            // re-verified against the catalog here rather than trusted: this
+            // body is user-reachable, and the transaction runs `add <to>@latest`.
+            const kind = body.kind === 'npm-rename' ? 'npm-rename' : 'git-to-npm'
+            if (body.kind !== undefined && body.kind !== 'git-to-npm' && body.kind !== 'npm-rename') {
               sendJson(response, 400, {
-                error: '当前 Git 来源无法唯一核验到一个 npm 包，或包含显式 branch/tag/commit/ref；未执行迁移。 / This Git source cannot be uniquely verified to one npm package, or it carries an explicit branch/tag/commit/ref; migration was not performed.',
+                error: '迁移请求无法识别，没有做任何改动。 / This migration request could not be recognised; nothing was changed.',
               })
               return
             }
-
-            const targetName = migration.target
+            let targetName: string
+            if (kind === 'npm-rename') {
+              const to = typeof body.to === 'string' ? body.to.trim() : ''
+              if (!NPM_NAME_RE.test(to) || to === name) {
+                sendJson(response, 400, {
+                  error: '目标包名无效，或仍是当前包名；未执行迁移。 / The target package name is invalid, or is still the current one; migration was not performed.',
+                })
+                return
+              }
+              // A registry dependency is a bare version range (the same shape
+              // `isNpmRollbackSource` accepts). Everything else carries a
+              // protocol or a path separator — `github:`, `file:`, `link:`,
+              // `workspace:`, `catalog:`, `npm:other@1.0.0`, a tarball URL — and
+              // replacing one of those with `to@latest` is not a rename (#1012).
+              if (!isRegistryRangeSpec(spec)) {
+                sendJson(response, 400, {
+                  error: '当前安装不是 npm 依赖，不能按包名迁移。 / The current install is not an npm dependency, so it cannot be migrated by package name.',
+                })
+                return
+              }
+              // Verified the same way discovery finds it: exactly one catalog
+              // entry declares this package as a former name of ITSELF, and
+              // the target is the one it publishes under (#1012). A name pair
+              // that nobody declares is not a rename, and two declarations are
+              // ambiguity — both refuse, because the transaction removes an
+              // installed package before this is answered.
+              let verified = false
+              try {
+                const registry = await loadRegistry()
+                const declared = findCatalogRename(registry.plugins, name)
+                const named = findNpmTargetEntry(registry.plugins, to)
+                verified = declared !== null && named !== null
+                  && declared.target.toLowerCase() === to.toLowerCase()
+                  && declared.entry === named
+              } catch (error) {
+                logEvent('warn', 'source-migration', `${name}: catalog lookup failed — ${error instanceof Error ? error.message : String(error)}`)
+              }
+              if (!verified) {
+                sendJson(response, 400, {
+                  error: `目标包名 ${to} 不在市场目录里，或目录没有声明它是「${name}」的新名字；未执行迁移。 / The target ${to} is not in the market catalog, or the catalog does not declare it as the new name of "${name}"; migration was not performed.`,
+                })
+                return
+              }
+              targetName = to
+            } else {
+              let migration: ReturnType<typeof findGitToNpmMigration> = null
+              try {
+                const registry = await loadRegistry()
+                migration = findGitToNpmMigration(registry.plugins, spec)
+              } catch (error) {
+                logEvent('warn', 'source-migration', `${name}: catalog lookup failed — ${error instanceof Error ? error.message : String(error)}`)
+              }
+              if (migration === null) {
+                sendJson(response, 400, {
+                  error: '当前 Git 来源无法唯一核验到一个 npm 包，或包含显式 branch/tag/commit/ref；未执行迁移。 / This Git source cannot be uniquely verified to one npm package, or it carries an explicit branch/tag/commit/ref; migration was not performed.',
+                })
+                return
+              }
+              targetName = migration.target
+            }
+            // "The previous source" is the Git ref for a discovered migration
+            // and the old package for a rename; every rollback sentence below
+            // has to name whichever one this run actually restores.
+            const restoredZh = kind === 'npm-rename' ? '原来的安装' : '原 Git 来源'
+            const restoredEn = kind === 'npm-rename' ? 'the original install' : 'the previous Git source'
             if (targetName !== name && manifestCapture.snapshot.dependencies[targetName] !== undefined) {
               sendJson(response, 409, {
                 error: `目标 npm 包 ${targetName} 已经作为独立依赖安装；为避免覆盖现有安装，未执行迁移。 / The target npm package ${targetName} is already installed as a separate dependency; migration was not performed to avoid overwriting it.`,
@@ -4094,7 +4209,7 @@ sendJson(response, 200, { updates })
               }
               return hasLoadableEntry(activeProfileDir, name)
                 ? { ok: true, detail: null }
-                : { ok: false, detail: 'the previous Git source was restored without a loadable entry' }
+                : { ok: false, detail: `${restoredEn} was restored without a loadable entry` }
             }
 
             const failWithRollback = async (detail: string, extra: Record<string, unknown> = {}): Promise<void> => {
@@ -4102,13 +4217,13 @@ sendJson(response, 200, { updates })
               logEvent(
                 rollback.ok ? 'warn' : 'error',
                 'source-migration',
-                `${name}: migration failed — ${detail}; ${rollback.ok ? 'previous Git source restored' : `rollback failed: ${rollback.detail ?? 'unknown'}`}`,
+                `${name}: migration failed — ${detail}; ${rollback.ok ? `${restoredEn} restored` : `rollback failed: ${rollback.detail ?? 'unknown'}`}`,
               )
               sendJson(response, 500, {
                 ok: false,
                 error: rollback.ok
-                  ? `${detail}；已恢复原 Git 来源。 / ${detail}; the previous Git source was restored.`
-                  : `${detail}；且原 Git 来源未能验证恢复（${rollback.detail ?? 'unknown'}）。 / ${detail}; restoration of the previous Git source could not be verified (${rollback.detail ?? 'unknown'}).`,
+                  ? `${detail}；已恢复${restoredZh}。 / ${detail}; ${restoredEn} was restored.`
+                  : `${detail}；且${restoredZh}未能验证恢复（${rollback.detail ?? 'unknown'}）。 / ${detail}; restoration of ${restoredEn} could not be verified (${rollback.detail ?? 'unknown'}).`,
                 rollback: rollback.ok,
                 ...extra,
               })
@@ -4207,11 +4322,12 @@ sendJson(response, 200, { updates })
                 wasLive,
               ),
             }
-            logEvent('info', 'source-migration', `${name}: ${spec} -> ${targetName}`)
+            logEvent('info', 'source-migration', `${name}: ${spec} -> ${targetName} (${kind})`)
             sendJson(response, 200, {
               ok: true,
               from: { name, source: spec },
               to: { name: targetName, source: 'npm' },
+              kind,
               activation,
               warnings: [stateWarning, ...patchWarnings].filter((value): value is string => value !== null && value !== ''),
             })
@@ -5269,8 +5385,8 @@ sendJson(response, 200, { updates })
             // rewriting the profile's bundle list.
             const renamedError = renamedTo === null ? null
               : rollbackOk
-                ? `${name} 的上游已把包改名为 ${renamedTo}：新版本会装在旧名字下，DSH 下次启动会拒绝这个 profile，所以本次更新已自动回滚、原版本已恢复。要用新版本，请卸载 ${name} 后按新名字 ${renamedTo} 重新安装。 / ${name} was renamed upstream to ${renamedTo}: the new version would sit under the old name and DSH would refuse to start this profile, so the update was rolled back and the previous build restored. To move to the new version, remove ${name} and install ${renamedTo}.`
-                : `${name} 的上游已把包改名为 ${renamedTo}，且未能验证恢复原版本（${rollbackDetail ?? 'unknown'}）；在卸载 ${name} 之前 DSH 会拒绝启动这个 profile，卸载后再按新名字 ${renamedTo} 重新安装。 / ${name} was renamed upstream to ${renamedTo}, and restoration of the previous build could not be verified (${rollbackDetail ?? 'unknown'}); DSH will refuse to start this profile until ${name} is removed — then install ${renamedTo}.`
+                ? `${name} 的上游已把包改名为 ${renamedTo}：新版本会装在旧名字下，DSH 下次启动会拒绝这个 profile，所以本次更新已自动回滚、原版本已恢复。目录如果声明了这次改名，「已安装」里会出现迁移入口。 / ${name} was renamed upstream to ${renamedTo}: the new version would sit under the old name and DSH would refuse to start this profile, so the update was rolled back and the previous build restored. If the catalog declares this rename, the installed list offers the migration.`
+                : `${name} 的上游已把包改名为 ${renamedTo}，且未能验证恢复原版本（${rollbackDetail ?? 'unknown'}）。 / ${name} was renamed upstream to ${renamedTo}, and restoration of the previous build could not be verified (${rollbackDetail ?? 'unknown'}).`
 
             const cancelDiff = cancelled ? changedSince(beforeInstalled) : null
             // Build-script blocks hit updates too (#69): a leftover invalid
@@ -6468,6 +6584,28 @@ sendJson(response, 200, { updates })
                 return
               }
             }
+            // Rename guard (#1012): the package this entry used to publish
+            // under may still be in the profile, and a rename re-registers the
+            // same loader rows — installing the successor beside it registers
+            // them twice and bricks the next start (#122). The market does not
+            // answer that with "uninstall, then install": when the old copy is
+            // a registry dependency the migration replaces it in place and
+            // carries switches, groups and notes across, so the response names
+            // both ends and the client continues straight into that
+            // transaction. A Git or path copy cannot be moved by that
+            // transaction, so it is named without promising the dialog.
+            const predecessor = await renamePredecessor(entry, installedNow, routesFor(region).npmRegistry)
+            if (predecessor !== null && typeof entry.npm === 'string') {
+              const movable = isRegistryRangeSpec(String(installedNow[predecessor] ?? ''))
+              logEvent('warn', 'install-rejected', `${entry.name}: predecessor ${predecessor} is installed — ${movable ? 'migration replaces it' : 'not a registry dependency, cannot be migrated here'}`)
+              sendJson(response, 409, {
+                error: movable
+                  ? `「${predecessor}」是这个插件改名前用的名字，已经装在 profile 里。装新名字会把同一个插件装成两份、下次启动可能失败；改用迁移把它换过来，开关、分组和备注都会保留。 / "${predecessor}" is already installed under this plugin's former package name. Installing the new name would put two copies of one plugin in the profile and can break the next start — migrate it instead; switches, groups and notes come along.`
+                  : `「${predecessor}」是这个插件改名前用的名字，已经装在 profile 里，而它是从 Git 或本地路径装的。装新名字会把同一个插件装成两份、下次启动可能失败；请先把旧的那份换成 npm 包（「已安装」里会给出可用的移动方式）。 / "${predecessor}" is already installed under this plugin's former package name, and it comes from a Git or local path. Installing the new name would put two copies of one plugin in the profile and can break the next start — move the old copy to the npm package first (the installed list shows what can be moved).`,
+                ...(movable ? { migration: { kind: 'npm-rename', from: predecessor, target: entry.npm } } : {}),
+              })
+              return
+            }
             // Fresh installs ask the host requirement too (#404/#473: the
             // update route refuses a declared-incompatible release before
             // installing; an unguarded fresh install would hit exactly the
@@ -6885,3 +7023,6 @@ sendJson(response, 200, { updates })
     for (const dispose of disposers) dispose()
   }
 }
+
+
+
