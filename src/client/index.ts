@@ -9,7 +9,7 @@ import { createElement as h } from 'react'
 import type { ReactNode } from 'react'
 import * as primitives from '@deepseek-ai/dsh-client-ui-primitives'
 import { missingIcons } from './icons.ts'
-import { en, zh } from './locales.ts'
+import { en, ja, zh } from './locales.ts'
 import { InstallToast } from './InstallToast.tsx'
 import { MarketErrorBoundary } from './ErrorBoundary.tsx'
 import { MarketSection } from './MarketSection.tsx'
@@ -75,7 +75,7 @@ interface ThemeService {
 
 /** The subset of the locale service this plugin touches. */
 interface LocaleService {
-  register(namespace: string, dicts: { zh: Record<string, string>; en: Record<string, string> }): unknown
+  register(namespace: string, dicts: { zh: Record<string, string>; en: Record<string, string>; ja?: Record<string, string> }): unknown
   bind(namespace: string): Translate
   subscribe(callback: () => void): () => void
   getSnapshot(): { active: string }
@@ -155,7 +155,7 @@ export function apply(ctx: MarketClientContext): void {
  * of them. Not exported: the split is a guard, not a surface.
  */
 function mountMarket(ctx: MarketClientContext): void {
-  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-market: dictionaries')
+  ctx.effect(() => ctx.locale.register(NS, { zh, en, ja }), 'dsh-market: dictionaries')
   const t = ctx.locale.bind(NS)
 
   // The section's nav glyph. The shell picks nav icons from its own built-in
